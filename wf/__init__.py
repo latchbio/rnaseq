@@ -8,7 +8,7 @@ from enum import Enum
 from typing import List, Optional, Union
 
 from dataclasses_json import dataclass_json
-from flytekit import task
+from flytekit import LaunchPlan, task
 from flytekitplugins.pod import Pod
 from kubernetes.client.models import (V1Container, V1PodSpec,
                                       V1ResourceRequirements, V1Toleration)
@@ -124,15 +124,20 @@ def parse_inputs(
 @small_task
 def trimgalore(
     samples: List[Sample],
+    run_name: str,
     clip_r1: Optional[int] = None,
     clip_r2: Optional[int] = None,
     three_prime_clip_r1: Optional[int] = None,
     three_prime_clip_r2: Optional[int] = None,
-) -> List[List[LatchFile]]:
+) -> (List[Sample], List[LatchFile]):
 
     sample = samples[0]  # TODO
 
-    trimmed_reads = []
+    trimmed_sample = Sample(
+        name=sample.name, strandedness=sample.strandedness, replicates=[]
+    )
+    trimmed_replicates = []
+    trimmed_reports = []
     for reads in sample.replicates:
 
         single_end_set = ("clip_r1", "three_prime_clip_r1")
@@ -143,7 +148,6 @@ def trimgalore(
                     "trim_galore",
                     "--cores",
                     str(96),  # TODO
-                    "--gzip",
                     *flags,
                     str(reads.r1.local_path),
                 ]
@@ -157,7 +161,6 @@ def trimgalore(
                     "--cores",
                     str(96),  # TODO
                     "--paired",
-                    "--gzip",
                     *flags,
                     str(reads.r1.local_path),
                     str(reads.r2.local_path),
@@ -165,23 +168,31 @@ def trimgalore(
             )
 
         # Return trimming reports as a side effect.
-        trimmed_reads.append(
-            file_glob(
-                "*trimming_report.txt",
-                f"latch:///Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/",
-            )
+        trimmed_reports = file_glob(
+            "*trimming_report.txt",
+            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/",
+        )
+        trimmed = file_glob(
+            "*_trimmed.fq",
+            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimmed Reads (TrimeGalore)/{sample.name}/",
         )
 
-    return trimmed_reads
+        if type(reads) is SingleEndReads:
+            trimmed_replicates.append(SingleEndReads(r1=trimmed[0]))
+        else:
+            # glob results are sorted -  r1 will come first.
+            trimmed_replicates.append(PairedEndReads(r1=trimmed[0], r2=trimmed[1]))
+
+    trimmed_sample.replicates = trimmed_replicates
+    return [trimmed_sample], trimmed_reports
 
 
 @large_spot_task
 def align_star(
     samples: List[Sample],
     ref: LatchGenome,
+    run_name: str,
 ) -> List[List[LatchFile]]:
-
-    # handle index
 
     os.mkdir("STAR_index")
 
@@ -192,6 +203,16 @@ def align_star(
             "sync",
             "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/STAR_index",
             "STAR_index",
+        ]
+    )
+
+    run(
+        [
+            "aws",
+            "s3",
+            "cp",
+            "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/GCF_000001405.40_GRCh38.p14_genomic.stripped.gtf",
+            ".",
         ]
     )
 
@@ -216,6 +237,8 @@ def align_star(
                 str(96),  # TODO
                 "--outFileNamePrefix",
                 sample.name,
+                "--sjdbGTFfile",
+                "GCF_000001405.40_GRCh38.p14_genomic.stripped.gtf",
                 "--outSAMtype",
                 "BAM",
                 "Unsorted",
@@ -225,19 +248,24 @@ def align_star(
 
         sample_bams.append(
             [
-                file_glob("*out.bam", f"latch:///Alignment (STAR)/{sample.name}")[0],
                 file_glob(
-                    "*sortedByCoord.out.bam", f"latch:///Alignment (STAR)/{sample.name}"
+                    "*out.bam",
+                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment (STAR)/{sample.name}/",
+                )[0],
+                file_glob(
+                    "*sortedByCoord.out.bam",
+                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment (STAR)/{sample.name}/",
                 )[0],
             ]
         )
     return sample_bams
 
 
-@small_task
+@large_spot_task
 def quantify_salmon(
     bams: List[List[LatchFile]],
     ref: LatchGenome,
+    run_name: str,
 ) -> List[LatchDir]:
 
     run(
@@ -245,15 +273,10 @@ def quantify_salmon(
             "aws",
             "s3",
             "cp",
-            "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/GCF_000001405.40_GRCh38.p14_genomic.transcripts.fna",
+            "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/GCF_000001405.40_GRCh38.p14_genomic.transcripts.decoy.fna",
             ".",
         ]
     )
-
-    # pseudoaligner
-    # ./bin/salmon quant - i transcripts_index - l < LIBTYPE > -1 reads1.fq - 2 reads2.fq - -validateMappings - o transcripts_quant
-    # ./bin/salmon quant - t transcripts.fa - l < LIBTYPE > -a aln.bam - o salmon_quant
-    # sudo ./salmon-1.5.2_linux_x86_64/bin/salmon quant - t GCF_000001405.40_GRCh38.p14_genomic.transcripts.fna - l A - a foobarAligned.out.bam - o salmon_quant
 
     quantified_bams = []
     for bam_set in bams:
@@ -263,7 +286,7 @@ def quantify_salmon(
                 "salmon",
                 "quant",
                 "-t",
-                str("GCF_000001405.40_GRCh38.p14_genomic.transcripts.fna"),
+                str("GCF_000001405.40_GRCh38.p14_genomic.transcripts.decoy.fna"),
                 "-a",
                 str(bam.local_path),
                 "--threads",
@@ -274,21 +297,13 @@ def quantify_salmon(
             ]
         )
         quantified_bams.append(
-            LatchDir("salmon_quant", "latch:///Quantification (salmon)/foobar/")
+            LatchDir(
+                "salmon_quant/quant.sf",
+                f"latch:///RNA-Seq Outputs/{run_name}/Quantification (salmon)/foobar/",
+            )
         )
 
-    # tx2gene
-    # 2gene
-    # salmon_tx2gene.py*
-    # salmon_tximport.r*
-    # summarize_experiments -> .rds
-
     return quantified_bams
-
-
-@small_task
-def foo(samples: List[Sample]):
-    ...
 
 
 class AlignmentTools(Enum):
@@ -301,6 +316,7 @@ def rnaseq(
     samples: List[Sample],
     alignment_quantification_tools: AlignmentTools,
     ta_ref_genome_fork: str,
+    sa_ref_genome_fork: str,
     output_location_fork: str,
     run_name: str,
     latch_genome: LatchGenome,
@@ -346,7 +362,6 @@ def rnaseq(
                   or this information can be specified manually. Sample strandedness is
                   inferred automatically (learn more).
             - params:
-                - bams
                 - samples
         - section: Alignment & Quantification
           flow:
@@ -368,6 +383,8 @@ def rnaseq(
                               flows:
                                 database:
                                     display_name: Select from Latch Genome Database
+                                    _tmp_unwrap_optionals:
+                                    - latch_genome
                                     flow:
                                     - text:
                                         We have curated a set of reference
@@ -379,6 +396,8 @@ def rnaseq(
                                         - latch_genome
                                 custom:
                                     display_name: Provide Custom Genome Data
+                                    _tmp_unwrap_optionals:
+                                    - ref_genome
                                     flow:
                                     - text:
                                         When providing custom reference
@@ -465,14 +484,6 @@ def rnaseq(
                   - save_indices
     Args:
 
-        bams:
-          RNAseq data is generated as a collection of FastQ files. Here you can
-          organize your FastQ files by sample and add technical replicates for
-          each sample.
-
-          __metadata__:
-            display_name: BAMS
-
         samples:
           RNAseq data is generated as a collection of FastQ files. Here you can
           organize your FastQ files by sample and add technical replicates for
@@ -515,6 +526,12 @@ def rnaseq(
           __metadata__:
             display_name: Annotation File
 
+        bams:
+          foobar
+
+          __metadata__:
+            display_name: bams
+
         ref_transcript:
           foobar
 
@@ -555,15 +572,16 @@ def rnaseq(
             display_name: Custom Output Location
     """
 
-    trimmed_samples = trimgalore(
+    trimmed_samples, reports = trimgalore(
         samples=samples,
         clip_r1=None,
         clip_r2=None,
         three_prime_clip_r1=None,
         three_prime_clip_r2=None,
+        run_name=run_name,
     )
-    bams = align_star(samples=samples, ref=latch_genome)
-    quantify_salmon(bams=bams, ref=latch_genome)
+    bams = align_star(samples=trimmed_samples, ref=latch_genome, run_name=run_name)
+    quantify_salmon(bams=bams, ref=latch_genome, run_name=run_name)
 
 
 if __name__ == "__main__":
@@ -580,4 +598,29 @@ if __name__ == "__main__":
         clip_r2=None,
         three_prime_clip_r1=None,
         three_prime_clip_r2=None,
+    )
+
+if __name__ == "wf":
+    LaunchPlan.create(
+        "wf.__init__.rnaseq.Test Data",
+        rnaseq,
+        default_inputs={
+            "samples": [
+                Sample(
+                    name="test_sample",
+                    strandedness=Strandedness.auto,
+                    replicates=[
+                        PairedEndReads(
+                            r1=LatchFile(
+                                "s3://latch-public/welcome/rnaseq/r1.fastq",
+                            ),
+                            r2=LatchFile(
+                                "s3://latch-public/welcome/rnaseq/r2.fastq",
+                            ),
+                        )
+                    ],
+                )
+            ],
+            "run_name": "Test Run",
+        },
     )
