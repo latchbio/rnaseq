@@ -5,7 +5,9 @@ import subprocess
 import types
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import List, Optional, Union
+from urllib.parse import urlparse
 
 from dataclasses_json import dataclass_json
 from flytekit import LaunchPlan, task
@@ -14,7 +16,7 @@ from kubernetes.client.models import (V1Container, V1PodSpec,
                                       V1ResourceRequirements, V1Toleration)
 from latch import small_task, workflow
 from latch.types import LatchDir, LatchFile
-from latch.types.utils import file_glob
+from latch.types.glob import file_glob
 
 
 def run(cmd: List[str]):
@@ -36,6 +38,61 @@ def ___repr__(self):
 
 
 LatchFile.__repr__ = types.MethodType(___repr__, LatchFile)
+
+
+def _is_valid_url(raw_url: str) -> bool:
+    """A valid URL (as a source or destination of a LatchFile) must:
+    * contain a latch or s3 scheme
+    * contain an absolute path
+    """
+    try:
+        parsed = urlparse(raw_url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("latch", "s3"):
+        return False
+    if not parsed.path.startswith("/"):
+        return False
+    return True
+
+
+def file_glob(
+    pattern: str, remote_directory: str, target_dir: Optional[Path] = None
+) -> List[LatchFile]:
+    """Constructs a list of LatchFiles from a glob pattern.
+    Convenient utility for passing collections of files between tasks. See
+    [nextflow's channels](https://www.nextflow.io/docs/latest/channel.html) or
+    [snakemake's wildcards](https://snakemake.readthedocs.io/en/stable/snakefiles/rules.html#wildcards).
+    for similar functionality in other orchestration tools.
+    The remote location of each constructed LatchFile will be consructed by
+    appending the file name returned by the pattern to the directory
+    represented by the `remote_directory`.
+    Args:
+        pattern: A glob pattern to match a set of files, eg. '*.py'. Will
+            resolve paths with respect to the working directory of the caller.
+        remote_directory: A valid latch URL pointing to a directory, eg.
+            latch:///foo. This _must_ be a directory and not a file.
+        target_dir: An optional Path object to define an alternate working
+            directory for path resolution
+    Returns:
+        A list of instantiated LatchFile objects.
+    Intended Use: ::
+        @small_task
+        def task():
+            ...
+            return file_glob("*.fastq.gz", "latch:///fastqc_outputs")
+    """
+
+    if not _is_valid_url(remote_directory):
+        return []
+
+    if target_dir is None:
+        wd = Path.cwd()
+    else:
+        wd = target_dir
+    matched = sorted(wd.glob(pattern))
+
+    return [LatchFile(str(file), remote_directory + file.name) for file in matched]
 
 
 def _get_96_spot_pod() -> Pod:
@@ -147,7 +204,7 @@ def trimgalore(
                 [
                     "trim_galore",
                     "--cores",
-                    str(96),  # TODO
+                    str(8),  # TODO
                     *flags,
                     str(reads.r1.local_path),
                 ]
@@ -159,13 +216,17 @@ def trimgalore(
                 [
                     "trim_galore",
                     "--cores",
-                    str(96),  # TODO
+                    str(8),  # TODO
                     "--paired",
                     *flags,
                     str(reads.r1.local_path),
                     str(reads.r2.local_path),
                 ]
             )
+
+        import time
+
+        time.sleep(100000)
 
         # Return trimming reports as a side effect.
         trimmed_reports = file_glob(
@@ -184,6 +245,7 @@ def trimgalore(
             trimmed_replicates.append(PairedEndReads(r1=trimmed[0], r2=trimmed[1]))
 
     trimmed_sample.replicates = trimmed_replicates
+
     return [trimmed_sample], trimmed_reports
 
 
@@ -583,22 +645,6 @@ def rnaseq(
     bams = align_star(samples=trimmed_samples, ref=latch_genome, run_name=run_name)
     quantify_salmon(bams=bams, ref=latch_genome, run_name=run_name)
 
-
-if __name__ == "__main__":
-    samples = [
-        Sample(
-            name="foo",
-            strandedness=Strandedness.auto,
-            replicates=[SingleEndReads(r1=LatchFile("/root/r1.fastq"))],
-        )
-    ]
-    trimgalore(
-        samples=samples,
-        clip_r1=None,
-        clip_r2=None,
-        three_prime_clip_r1=None,
-        three_prime_clip_r2=None,
-    )
 
 if __name__ == "wf":
     LaunchPlan.create(

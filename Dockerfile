@@ -1,6 +1,6 @@
 FROM 812206152185.dkr.ecr.us-west-2.amazonaws.com/latch-base:9a7d-main
 
-RUN apt-get install -y curl
+RUN apt-get install -y curl vim
 RUN python3 -m pip install cutadapt
 RUN curl -fsSL https://github.com/FelixKrueger/TrimGalore/archive/0.6.6.tar.gz -o trim_galore.tar.gz &&\
     tar xvzf trim_galore.tar.gz &&\
@@ -18,18 +18,8 @@ RUN curl -L https://github.com/COMBINE-lab/salmon/releases/download/v1.8.0/salmo
   mv salmon-1.8.0_linux_x86_64/lib/* /lib/x86_64-linux-gnu/ &&\
   rm -rf salmon-1.8.0 salmon-1.8.0_linux_x86_64.tar.gz
 
-
-COPY latch /root/latch
-RUN python3 -m pip uninstall latch -y
-RUN cd latch && python3 -m pip install -e .
-
-COPY lytekit /root/lytekit
-RUN python3 -m pip uninstall lytekit -y
-RUN cd lytekit && python3 -m pip install -e .
-
-
+RUN python3 -m pip install --upgrade latch
 COPY wf /root/wf
 ARG tag
 ENV FLYTE_INTERNAL_IMAGE $tag
-
 WORKDIR /root
