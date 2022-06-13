@@ -109,7 +109,8 @@ def _get_96_spot_pod() -> Pod:
         pod_spec=V1PodSpec(
             containers=[primary_container],
             tolerations=[
-                V1Toleration(effect="NoSchedule", key="ng", value="cpu-96-spot")
+                V1Toleration(effect="NoSchedule",
+                             key="ng", value="cpu-96-spot")
             ],
         ),
         primary_container_name="primary",
@@ -210,7 +211,8 @@ def trimgalore(
                 ]
             )
         else:
-            paired_end_set = single_end_set + ("clip_r2", "three_prime_clip_r2")
+            paired_end_set = single_end_set + \
+                ("clip_r2", "three_prime_clip_r2")
             flags = _find_locals_in_set(paired_end_set)
             run(
                 [
@@ -238,7 +240,8 @@ def trimgalore(
             trimmed_replicates.append(SingleEndReads(r1=trimmed[0]))
         else:
             # glob results are sorted -  r1 will come first.
-            trimmed_replicates.append(PairedEndReads(r1=trimmed[0], r2=trimmed[1]))
+            trimmed_replicates.append(
+                PairedEndReads(r1=trimmed[0], r2=trimmed[1]))
 
     trimmed_sample.replicates = trimmed_replicates
 
@@ -483,14 +486,6 @@ def rnaseq(
                                         - params:
                                             - ref_transcript
                                             - salmon_index
-                            - spoiler: Advanced Selective Alignment Settings
-                              flow:
-                                - params:
-                                    - star_index
-                        - spoiler: General Alignment Settings
-                          flow:
-                            - params:
-                                - star_index
                 traditional:
                     display_name: Traditional Alignment
                     flow:
@@ -523,10 +518,6 @@ def rnaseq(
                                         - params:
                                             - ref_transcript
                                             - star_index
-                            - spoiler: Advanced Traditional Alignment Settings
-                              flow:
-                                - params:
-                                    - star_index
         - section: Output Settings
           flow:
           - params:
