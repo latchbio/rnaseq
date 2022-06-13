@@ -12,8 +12,12 @@ from urllib.parse import urlparse
 from dataclasses_json import dataclass_json
 from flytekit import LaunchPlan, task
 from flytekitplugins.pod import Pod
-from kubernetes.client.models import (V1Container, V1PodSpec,
-                                      V1ResourceRequirements, V1Toleration)
+from kubernetes.client.models import (
+    V1Container,
+    V1PodSpec,
+    V1ResourceRequirements,
+    V1Toleration,
+)
 from latch import small_task, workflow
 from latch.types import LatchDir, LatchFile
 from latch.types.glob import file_glob
@@ -28,7 +32,7 @@ def _find_locals_in_set(param_set: set) -> List[str]:
     for param, val in locals().items():
         if param not in param_set or val is None:
             continue
-        flags.extend((f"--{param}"), str(val))
+        flags.extend(f"--{param}", str(val))
     return flags
 
 
@@ -179,7 +183,7 @@ def parse_inputs(
     ...
 
 
-@small_task
+@large_spot_task
 def trimgalore(
     samples: List[Sample],
     run_name: str,
@@ -205,7 +209,7 @@ def trimgalore(
                 [
                     "trim_galore",
                     "--cores",
-                    str(8),  # TODO
+                    str(96),  # TODO
                     *flags,
                     str(reads.r1.local_path),
                 ]
@@ -218,7 +222,7 @@ def trimgalore(
                 [
                     "trim_galore",
                     "--cores",
-                    str(8),  # TODO
+                    str(96),  # TODO
                     "--paired",
                     *flags,
                     str(reads.r1.local_path),
@@ -229,11 +233,13 @@ def trimgalore(
         # Return trimming reports as a side effect.
         trimmed_reports = file_glob(
             "*trimming_report.txt",
-            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/",
+            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimming Reports"
+            f" (TrimeGalore)/{sample.name}/",
         )
         trimmed = file_glob(
             "*fq*",
-            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimmed Reads (TrimeGalore)/{sample.name}/",
+            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimmed Reads"
+            f" (TrimeGalore)/{sample.name}/",
         )
 
         if type(reads) is SingleEndReads:
@@ -318,11 +324,13 @@ def align_star(
             [
                 file_glob(
                     "*out.bam",
-                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment (STAR)/{sample.name}/",
+                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment"
+                    f" (STAR)/{sample.name}/",
                 )[0],
                 file_glob(
                     "*sortedByCoord.out.bam",
-                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment (STAR)/{sample.name}/",
+                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment"
+                    f" (STAR)/{sample.name}/",
                 )[0],
             ]
         )
@@ -368,7 +376,15 @@ def quantify_salmon(
         quantified_bams.append(
             LatchFile(
                 "/root/salmon_quant/quant.sf",
-                f"latch:///RNA-Seq Outputs/{run_name}/Quantification (salmon)/{sample_names[i]}/{sample_names[i]}_quant.sf",
+                f"latch:///RNA-Seq Outputs/{run_name}/Quantification"
+                f" (salmon)/{sample_names[i]}/{sample_names[i]}_quant.sf",
+            )
+        )
+        quantified_bams.append(
+            LatchFile(
+                "/root/salmon_quant/quant.sf",
+                f"latch:///RNA-Seq Outputs/{run_name}/Quantification"
+                f" (salmon)/{sample_names[i]}/{sample_names[i]}_quant.tsv",
             )
         )
 
