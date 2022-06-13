@@ -12,12 +12,8 @@ from urllib.parse import urlparse
 from dataclasses_json import dataclass_json
 from flytekit import LaunchPlan, task
 from flytekitplugins.pod import Pod
-from kubernetes.client.models import (
-    V1Container,
-    V1PodSpec,
-    V1ResourceRequirements,
-    V1Toleration,
-)
+from kubernetes.client.models import (V1Container, V1PodSpec,
+                                      V1ResourceRequirements, V1Toleration)
 from latch import small_task, workflow
 from latch.types import LatchDir, LatchFile
 from latch.types.glob import file_glob
@@ -113,8 +109,7 @@ def _get_96_spot_pod() -> Pod:
         pod_spec=V1PodSpec(
             containers=[primary_container],
             tolerations=[
-                V1Toleration(effect="NoSchedule",
-                             key="ng", value="cpu-96-spot")
+                V1Toleration(effect="NoSchedule", key="ng", value="cpu-96-spot")
             ],
         ),
         primary_container_name="primary",
@@ -215,8 +210,7 @@ def trimgalore(
                 ]
             )
         else:
-            paired_end_set = single_end_set + \
-                ("clip_r2", "three_prime_clip_r2")
+            paired_end_set = single_end_set + ("clip_r2", "three_prime_clip_r2")
             flags = _find_locals_in_set(paired_end_set)
             run(
                 [
@@ -246,8 +240,7 @@ def trimgalore(
             trimmed_replicates.append(SingleEndReads(r1=trimmed[0]))
         else:
             # glob results are sorted -  r1 will come first.
-            trimmed_replicates.append(
-                PairedEndReads(r1=trimmed[0], r2=trimmed[1]))
+            trimmed_replicates.append(PairedEndReads(r1=trimmed[0], r2=trimmed[1]))
 
     trimmed_sample.replicates = trimmed_replicates
 
@@ -441,7 +434,7 @@ def rnaseq(
         flow:
         - section: Samples
           flow:
-            - text:
+            - text: >-
                   Sample files can be provided and their read type can be
                   inferred from their name (learn more about name formatting used here)
                   or this information can be specified manually. Sample strandedness is
@@ -450,86 +443,90 @@ def rnaseq(
                 - samples
         - section: Alignment & Quantification
           flow:
-            - text:
-                  Two methods are available for the alignment and quantification of your reads.
-                  "Traditional alignment" is the more accurate but expensive (in terms of time and
-                  computing resources) option. "Selective alignment" is a faster mapping algorithm
-                  that is slightly less accurate. Often the differences between accuracy is
-                  minimal between these two methods - read more
-                  [here](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02151-8).
+            - text: >-
+                Two methods are available for the alignment and quantification of your reads.
+                "Traditional alignment" is the more accurate but expensive (in terms of time and
+                computing resources) option. "Selective alignment" is a faster mapping algorithm
+                that is slightly less accurate. Often the differences between accuracy is
+                minimal between these two methods - read more
+                [here](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02151-8).
             - fork: alignment_quantification_tools
               flows:
                 selective:
                     display_name: Selective Alignment
                     flow:
                     - fork: sa_ref_genome_fork
-                        flows:
+                      flows:
                         database:
                             display_name: Select from Latch Genome Database
                             _tmp_unwrap_optionals:
                                 - latch_genome
                             flow:
-                            - text:
-                                We have curated a set of reference
-                                genome data for ease and
-                                reproducibility. More information about
-                                these managed files can be found
-                                [here](https://github.com/latchbio/latch-genomes).
-                            - params:
-                                - latch_genome
+                                - text: >-
+                                    We have curated a set of reference
+                                    genome data for ease and
+                                    reproducibility. More information about
+                                    these managed files can be found
+                                    [here](https://github.com/latchbio/latch-genomes).
+                                - params:
+                                    - latch_genome
                         custom:
-                            display_name: Provide Custom Genome Data
+                            display_name: Provide Custom Genome
                             _tmp_unwrap_optionals:
-                                - ref_genome
-                            flow:
-                            - text:
-                                When providing custom reference
-                                data to the selective alignment method,
-                                only a reference transcriptome is
-                                needed. This can be provided directly,
-                                generated from a genome + annotation
-                                file or provided pre-built as an index.
-                            - params:
                                 - gtf
                                 - ref_genome
-                            - spoiler: Optional Params
-                                flow:
-                                - text:
+                            flow:
+                                - text: >-
+                                    When providing custom reference
+                                    data to the selective alignment method,
+                                    only a reference transcriptome is
+                                    needed. This can be provided directly,
+                                    generated from a genome + annotation
+                                    file or provided pre-built as an index.
+                                - params:
+                                    - gtf
+                                    - ref_genome
+                                - spoiler: Optional Params
+                                  flow:
+                                    - text: >-
                                         These files will be generated from the
                                         GTF/Genome files if not provided.
-                                - params:
-                                    - ref_transcript
-                                    - salmon_index
+                                    - params:
+                                        - ref_transcript
+                                        - salmon_index
                 traditional:
                     display_name: Traditional Alignment
                     flow:
-                    - fork: ta_ref_genome_fork
-                        flows:
-                        database:
-                            display_name: Select from Latch Genome Database
-                            flow:
-                            - text:
-                                We have curated a set of reference
-                                genome data for ease and
-                                reproducibility. More information about
-                                these managed files can be found
-                                [here](https://github.com/latchbio/latch-genomes).
-                            - params:
-                                - latch_genome
-                        custom:
-                            display_name: Provide Custom Genome
-                            flow:
-                            - params:
-                                - gtf
-                                - ref_genome
-                            - spoiler: Optional Params
+                        - fork: ta_ref_genome_fork
+                          flows:
+                            database:
+                                display_name: Select from Latch Genome Database
                                 flow:
-                                - text:
-                                        These files will be generated from the
-                                        GTF/Genome files if not provided.
-                                - params:
-                                    - ref_transcript
-                                    - star_index
+                                    - text: >-
+                                        We have curated a set of reference
+                                        genome data for ease and
+                                        reproducibility. More information about
+                                        these managed files can be found
+                                        [here](https://github.com/latchbio/latch-genomes).
+                                    - params:
+                                        - latch_genome
+                            custom:
+                                display_name: Provide Custom Genome
+                                _tmp_unwrap_optionals:
+                                    - gtf
+                                    - ref_genome
+                                flow:
+                                    - params:
+                                        - gtf
+                                        - ref_genome
+                                    - spoiler: Optional Params
+                                      flow:
+                                        - text: >-
+                                            These files will be generated from the
+                                            GTF/Genome files if not provided.
+                                        - params:
+                                            - ref_transcript
+                                            - star_index
         - section: Output Settings
           flow:
           - params:
@@ -544,7 +541,7 @@ def rnaseq(
                         viewer - RNA-Seq A&Q Outputs > "Run Name"
                 custom:
                     display_name: Specify Custom Path
-                    _tmp_unwrap_optionals: 
+                    _tmp_unwrap_optionals:
                         - custom_output_dir
                     flow:
                     - params:
@@ -563,9 +560,10 @@ def rnaseq(
           __metadata__:
             display_name: Sample Sheet
             _tmp:
-              custom_ingestion: auto
+                custom_ingestion: auto
 
         alignment_quantification_tools:
+          todo
 
           __metadata__:
             display_name: Alignment & Quantification Method
