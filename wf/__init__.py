@@ -446,78 +446,74 @@ def rnaseq(
                 selective:
                     display_name: Selective Alignment
                     flow:
-                        - section: Reference Genome
-                          flow:
-                            - fork: sa_ref_genome_fork
-                              flows:
-                                database:
-                                    display_name: Select from Latch Genome Database
-                                    _tmp_unwrap_optionals:
-                                    - latch_genome
-                                    flow:
-                                    - text:
-                                        We have curated a set of reference
-                                        genome data for ease and
-                                        reproducibility. More information about
-                                        these managed files can be found
-                                        [here](https://github.com/latchbio/latch-genomes).
-                                    - params:
-                                        - latch_genome
-                                custom:
-                                    display_name: Provide Custom Genome Data
-                                    _tmp_unwrap_optionals:
-                                    - ref_genome
-                                    flow:
-                                    - text:
-                                        When providing custom reference
-                                        data to the selective alignment method,
-                                        only a reference transcriptome is
-                                        needed. This can be provided directly,
-                                        generated from a genome + annotation
-                                        file or provided pre-built as an index.
-                                    - params:
-                                        - gtf
-                                        - ref_genome
-                                    - spoiler: Optional Params
-                                      flow:
-                                        - text:
-                                              These files will be generated from the
-                                              GTF/Genome files if not provided.
-                                        - params:
-                                            - ref_transcript
-                                            - salmon_index
+                    - fork: sa_ref_genome_fork
+                        flows:
+                        database:
+                            display_name: Select from Latch Genome Database
+                            _tmp_unwrap_optionals:
+                                - latch_genome
+                            flow:
+                            - text:
+                                We have curated a set of reference
+                                genome data for ease and
+                                reproducibility. More information about
+                                these managed files can be found
+                                [here](https://github.com/latchbio/latch-genomes).
+                            - params:
+                                - latch_genome
+                        custom:
+                            display_name: Provide Custom Genome Data
+                            _tmp_unwrap_optionals:
+                                - ref_genome
+                            flow:
+                            - text:
+                                When providing custom reference
+                                data to the selective alignment method,
+                                only a reference transcriptome is
+                                needed. This can be provided directly,
+                                generated from a genome + annotation
+                                file or provided pre-built as an index.
+                            - params:
+                                - gtf
+                                - ref_genome
+                            - spoiler: Optional Params
+                                flow:
+                                - text:
+                                        These files will be generated from the
+                                        GTF/Genome files if not provided.
+                                - params:
+                                    - ref_transcript
+                                    - salmon_index
                 traditional:
                     display_name: Traditional Alignment
                     flow:
-                        - section: Reference Genome
-                          flow:
-                            - fork: ta_ref_genome_fork
-                              flows:
-                                database:
-                                    display_name: Select from Latch Genome Database
-                                    flow:
-                                    - text:
-                                        We have curated a set of reference
-                                        genome data for ease and
-                                        reproducibility. More information about
-                                        these managed files can be found
-                                        [here](https://github.com/latchbio/latch-genomes).
-                                    - params:
-                                        - latch_genome
-                                custom:
-                                    display_name: Provide Custom Genome Data
-                                    flow:
-                                    - params:
-                                        - gtf
-                                        - ref_genome
-                                    - spoiler: Optional Params
-                                      flow:
-                                        - text:
-                                              These files will be generated from the
-                                              GTF/Genome files if not provided.
-                                        - params:
-                                            - ref_transcript
-                                            - star_index
+                    - fork: ta_ref_genome_fork
+                        flows:
+                        database:
+                            display_name: Select from Latch Genome Database
+                            flow:
+                            - text:
+                                We have curated a set of reference
+                                genome data for ease and
+                                reproducibility. More information about
+                                these managed files can be found
+                                [here](https://github.com/latchbio/latch-genomes).
+                            - params:
+                                - latch_genome
+                        custom:
+                            display_name: Provide Custom Genome
+                            flow:
+                            - params:
+                                - gtf
+                                - ref_genome
+                            - spoiler: Optional Params
+                                flow:
+                                - text:
+                                        These files will be generated from the
+                                        GTF/Genome files if not provided.
+                                - params:
+                                    - ref_transcript
+                                    - star_index
         - section: Output Settings
           flow:
           - params:
@@ -532,6 +528,8 @@ def rnaseq(
                         viewer - RNA-Seq A&Q Outputs > "Run Name"
                 custom:
                     display_name: Specify Custom Path
+                    _tmp_unwrap_optionals: 
+                        - custom_output_dir
                     flow:
                     - params:
                         - custom_output_dir
@@ -552,10 +550,9 @@ def rnaseq(
               custom_ingestion: auto
 
         alignment_quantification_tools:
-          foobar
 
           __metadata__:
-            display_name: Alignment & Quantification Tools
+            display_name: Alignment & Quantification Method
 
         latch_genome:
           Curated reference files for specific genome sources and builds.
@@ -564,18 +561,25 @@ def rnaseq(
           __metadata__:
             display_name: Genome Database Option
 
-        ta_ref_genome_fork:
-          foobar
+        sa_ref_genome_fork:
+          Select a reference genome from our curated database or provide your own.
 
           __metadata__:
-            display_name: Ref Genome Source
+            display_name: Reference Genome Source
+
+        ta_ref_genome_fork:
+          Select a reference genome from our curated database or provide your own.
+
+          __metadata__:
+            display_name: Reference Genome Source
 
         ref_genome:
           foobar
 
           __metadata__:
             display_name: Reference Genome File
-            detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
+            appearance:
+                detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
 
         gtf:
           foobar
