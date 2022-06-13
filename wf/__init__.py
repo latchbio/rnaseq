@@ -224,17 +224,13 @@ def trimgalore(
                 ]
             )
 
-        import time
-
-        time.sleep(100000)
-
         # Return trimming reports as a side effect.
         trimmed_reports = file_glob(
             "*trimming_report.txt",
             f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/",
         )
         trimmed = file_glob(
-            "*_trimmed.fq",
+            "*fq*",
             f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimmed Reads (TrimeGalore)/{sample.name}/",
         )
 
@@ -254,7 +250,7 @@ def align_star(
     samples: List[Sample],
     ref: LatchGenome,
     run_name: str,
-) -> List[List[LatchFile]]:
+) -> (List[List[LatchFile]], List[str]):
 
     os.mkdir("STAR_index")
 
@@ -281,12 +277,18 @@ def align_star(
     sample = samples[0]  # TODO
 
     sample_bams = []
+    sample_names = []
     for reads in sample.replicates:
 
         if type(reads) is SingleEndReads:
             reads = [str(reads.r1.local_path)]
         else:
             reads = [str(reads.r1.local_path), str(reads.r2.local_path)]
+
+        for i, read in enumerate(reads):
+            if read[-3:] == ".gz":
+                run(["gunzip", read])
+                reads[i] = read[:-3]
 
         run(
             [
@@ -308,6 +310,7 @@ def align_star(
             ]
         )
 
+        sample_names.append(sample.name)
         sample_bams.append(
             [
                 file_glob(
@@ -320,15 +323,16 @@ def align_star(
                 )[0],
             ]
         )
-    return sample_bams
+    return sample_bams, sample_names
 
 
 @large_spot_task
 def quantify_salmon(
     bams: List[List[LatchFile]],
+    sample_names: List[str],
     ref: LatchGenome,
     run_name: str,
-) -> List[LatchDir]:
+) -> List[LatchFile]:
 
     run(
         [
@@ -341,7 +345,7 @@ def quantify_salmon(
     )
 
     quantified_bams = []
-    for bam_set in bams:
+    for i, bam_set in enumerate(bams):
         bam = bam_set[0]
         run(
             [
@@ -359,9 +363,9 @@ def quantify_salmon(
             ]
         )
         quantified_bams.append(
-            LatchDir(
-                "salmon_quant/quant.sf",
-                f"latch:///RNA-Seq Outputs/{run_name}/Quantification (salmon)/foobar/",
+            LatchFile(
+                "/root/salmon_quant/quant.sf",
+                f"latch:///RNA-Seq Outputs/{run_name}/Quantification (salmon)/{sample_names[i]}/{sample_names[i]}_quant.sf",
             )
         )
 
@@ -390,7 +394,7 @@ def rnaseq(
     salmon_index: Optional[LatchFile] = None,
     save_indices: bool = False,
     custom_output_dir: Optional[LatchDir] = None,
-):
+) -> List[LatchFile]:
     """rnaseq
 
     rnaseq
@@ -642,8 +646,12 @@ def rnaseq(
         three_prime_clip_r2=None,
         run_name=run_name,
     )
-    bams = align_star(samples=trimmed_samples, ref=latch_genome, run_name=run_name)
-    quantify_salmon(bams=bams, ref=latch_genome, run_name=run_name)
+    bams, sample_names = align_star(
+        samples=trimmed_samples, ref=latch_genome, run_name=run_name
+    )
+    return quantify_salmon(
+        bams=bams, sample_names=sample_names, ref=latch_genome, run_name=run_name
+    )
 
 
 if __name__ == "wf":

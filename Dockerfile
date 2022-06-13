@@ -19,6 +19,11 @@ RUN curl -L https://github.com/COMBINE-lab/salmon/releases/download/v1.8.0/salmo
   rm -rf salmon-1.8.0 salmon-1.8.0_linux_x86_64.tar.gz
 
 RUN python3 -m pip install --upgrade latch
+RUN python3 -m pip uninstall -y flytekit
+
+COPY lytekit /root/lytekit
+RUN cd lytekit && python3 -m pip install -e .
+
 COPY wf /root/wf
 ARG tag
 ENV FLYTE_INTERNAL_IMAGE $tag
