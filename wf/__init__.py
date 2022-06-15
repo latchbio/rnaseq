@@ -109,7 +109,8 @@ def _get_96_spot_pod() -> Pod:
         pod_spec=V1PodSpec(
             containers=[primary_container],
             tolerations=[
-                V1Toleration(effect="NoSchedule", key="ng", value="cpu-96-spot")
+                V1Toleration(effect="NoSchedule",
+                             key="ng", value="cpu-96-spot")
             ],
         ),
         primary_container_name="primary",
@@ -210,7 +211,8 @@ def trimgalore(
                 ]
             )
         else:
-            paired_end_set = single_end_set + ("clip_r2", "three_prime_clip_r2")
+            paired_end_set = single_end_set + \
+                ("clip_r2", "three_prime_clip_r2")
             flags = _find_locals_in_set(paired_end_set)
             run(
                 [
@@ -240,7 +242,8 @@ def trimgalore(
             trimmed_replicates.append(SingleEndReads(r1=trimmed[0]))
         else:
             # glob results are sorted -  r1 will come first.
-            trimmed_replicates.append(PairedEndReads(r1=trimmed[0], r2=trimmed[1]))
+            trimmed_replicates.append(
+                PairedEndReads(r1=trimmed[0], r2=trimmed[1]))
 
     trimmed_sample.replicates = trimmed_replicates
 
@@ -407,20 +410,31 @@ def rnaseq(
     save_indices: bool = False,
     custom_output_dir: Optional[LatchDir] = None,
 ) -> List[LatchFile]:
-    """rnaseq
+    """Performs alignment & quantification on Bulk RNA-Sequencing reads. 
 
-    rnaseq
+    Bulk RNA-Seq (Alignment & Quantification)
     ----
 
-    Write some documentation about your workflow in
-    markdown here:
+    This workflow allows you to provide RNA sequencing sample reads and generate alignment files and count tables of genes expressed based on a reference genome.
 
-    > Regular markdown constructs work as expected.
+    This current iteration of the workflow has three steps:
 
-    # Heading
+    1. Automatic read trimming using [TrimGalore](https://www.bioinformatics.babraham.ac.uk/projects/trim_galore/)
+    2. Alignment (STAR) or Pseudo-Alignment (Salmon) to reference genome
+    3. Quantification of expressed genes in each sample using Salmon
 
-    * content1
-    * content2
+    ## Alignment & Quantification Methods
+
+    There are two methods availible in this workflow for doing alignment and quantification: 
+
+    ### Traditional Alignment 
+
+    This method uses an alignment tool called [STAR](https://github.com/alexdobin/STAR) which will generate BAM files containing the mapped reads for each sample. This method then takes these alignment files and does gene quantification using [Salmon](https://salmon.readthedocs.io/en/latest/salmon.html).
+
+    ### Selective Alignment 
+
+    This method uses [Salmon's](https://salmon.readthedocs.io/en/latest/salmon.html) selective-alignment mapping algorithm to perform "pseudo-alignment" of the sample reads and then does gene quantification. 
+
 
     __metadata__:
         display_name: RNAseq
@@ -446,9 +460,13 @@ def rnaseq(
             - text: >-
                 Two methods are available for the alignment and quantification of your reads.
                 "Traditional alignment" is the more accurate but expensive (in terms of time and
-                computing resources) option. "Selective alignment" is a faster mapping algorithm
-                that is slightly less accurate. Often the differences between accuracy is
-                minimal between these two methods - read more
+                computing resources) option. This method in this workflow employs 
+                [STAR](https://github.com/alexdobin/STAR) for alignment and 
+                [Salmon](https://salmon.readthedocs.io/en/latest/salmon.html).  
+
+                "Selective alignment" is a faster mapping algorithm that is slightly less accurate. 
+                This method employs Salmon to do "pseudo-aligment" and then quantification. 
+                Often the differences between accuracy is minimal between these two methods - read more
                 [here](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02151-8).
             - fork: alignment_quantification_tools
               flows:
@@ -553,26 +571,25 @@ def rnaseq(
     Args:
 
         samples:
-          RNAseq data is generated as a collection of FastQ files. Here you can
-          organize your FastQ files by sample and add technical replicates for
-          each sample.
+            Here you can organize your FastQ files by sample and add technical replicates for each sample. 
+            Biological replicates should be organized as separate samples.
 
           __metadata__:
             display_name: Sample Sheet
+            batch_table_column: true
             _tmp:
                 custom_ingestion: auto
 
         alignment_quantification_tools:
-          todo
 
           __metadata__:
             display_name: Alignment & Quantification Method
 
         latch_genome:
           Curated reference files for specific genome sources and builds.
-          pull
 
           __metadata__:
+            batch_table_column: true
             display_name: Genome Database Option
 
         sa_ref_genome_fork:
@@ -588,7 +605,7 @@ def rnaseq(
             display_name: Reference Genome Source
 
         ref_genome:
-          foobar
+          The reference genome you want to align you samples to.
 
           __metadata__:
             display_name: Reference Genome File
@@ -596,7 +613,7 @@ def rnaseq(
                 detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
 
         gtf:
-          foobar
+          The gene annonation file that corresponds to the reference genome provided.
 
           __metadata__:
             display_name: Annotation File
@@ -608,40 +625,42 @@ def rnaseq(
             display_name: bams
 
         ref_transcript:
-          foobar
+          If not provided the workflow will generate from the Annotation File and Reference Genome File.
 
           __metadata__:
-            display_name: Reference Transcript File
+            display_name: Reference Transcript File (optional)
+                appearance:
+                    detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
 
         star_index:
-          foobar
+          You are able to provide a zipped prebuilt STAR alignment index for your genome. This will speed up run time as the index is generated if none is provided. In output settings you are able to save indexes from a run to be used in future runs.
 
           __metadata__:
             display_name: Provide Prebuilt STAR Index
 
         salmon_index:
-          foobar
+            You are able to provide a zipped prebuilt Salmon pseudo-alignment index for your genome. This will speed up run time as the index is generated if none is provided. In output settings you are able to save indexes from a run to be used in future runs.
 
           __metadata__:
             display_name: salmon Index
 
         save_indices:
-          foobar
+            If you provided a custom genome you can output the alignment indexes generated from this run for use in future runs. This will speed up runtime since the workflow doesn't have to then regenerate the indexes.
 
           __metadata__:
             display_name: Save Generated Reference Indexes
 
         run_name:
-          foobar
+          A name for this analysis run, this will be used to name outputs from this run.
 
           __metadata__:
+            batch_table_column: true
             display_name: Run Name
 
         output_location_fork:
-          foobar
 
         custom_output_dir:
-          foobar
+          You can provide a custom location where this run's analysis outputs will be located. 
 
           __metadata__:
             display_name: Custom Output Location
