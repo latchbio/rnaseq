@@ -204,7 +204,7 @@ def trimgalore(
                 [
                     "trim_galore",
                     "--cores",
-                    str(96),  # TODO
+                    str(8),
                     *flags,
                     str(reads.r1.local_path),
                 ]
@@ -216,7 +216,7 @@ def trimgalore(
                 [
                     "trim_galore",
                     "--cores",
-                    str(96),  # TODO
+                    str(8),
                     "--paired",
                     *flags,
                     str(reads.r1.local_path),
@@ -300,7 +300,7 @@ def align_star(
                 "--readFilesIn",
                 *reads,
                 "--runThreadN",
-                str(96),  # TODO
+                str(96),
                 "--outFileNamePrefix",
                 sample.name,
                 "--sjdbGTFfile",
@@ -360,10 +360,10 @@ def quantify_salmon(
                 "-a",
                 str(bam.local_path),
                 "--threads",
-                str(96),  # TODO
+                str(96),
                 "--libType=A",
                 "-o",
-                "salmon_quant",  # TODO:
+                "salmon_quant",
             ]
         )
         quantified_bams.append(
