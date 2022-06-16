@@ -226,14 +226,17 @@ def trimgalore(
             )
 
         # Return trimming reports as a side effect.
-        path_tail = f"{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/"
+        report_tail = f"{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/"
+        read_tail = f"{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/"
         if custom_output_dir is None:
-            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+            report_literal = "latch:///RNA-Seq Outputs/" + report_tail
+            read_literal = "latch:///RNA-Seq Outputs/" + read_tail
         else:
-            output_literal = custom_output_dir.remote_path + path_tail
+            report_literal = custom_output_dir.remote_path + report_tail
+            read_literal = custom_output_dir.remote_path + read_tail
 
-        trimmed_reports = file_glob("*trimming_report.txt", output_literal)
-        trimmed = file_glob("*fq*", output_literal)
+        trimmed_reports = file_glob("*trimming_report.txt", report_literal)
+        trimmed = file_glob("*fq*", read_literal)
 
         if type(reads) is SingleEndReads:
             trimmed_replicates.append(SingleEndReads(r1=trimmed[0]))
@@ -314,9 +317,7 @@ def align_star(
 
         sample_names.append(sample.name)
 
-        # Return trimming reports as a side effect.
-        path_tail = f"{run_name}/Quality Control Data/Alignment (STAR)/{sample.name}/"
-
+        path_tail = f"{run_name}/Alignment (STAR)/{sample.name}/"
         if custom_output_dir is None:
             output_literal = "latch:///RNA-Seq Outputs/" + path_tail
         else:
@@ -328,6 +329,7 @@ def align_star(
                 file_glob("*sortedByCoord.out.bam", output_literal)[0],
             ]
         )
+
     return sample_bams, sample_names
 
 
@@ -337,6 +339,7 @@ def quantify_salmon(
     sample_names: List[str],
     ref: LatchGenome,
     run_name: str,
+    custom_output_dir: Optional[LatchDir] = None,
 ) -> List[LatchFile]:
 
     run(
@@ -349,7 +352,7 @@ def quantify_salmon(
         ]
     )
 
-    quantified_bams = []
+    sf_files = []
     for i, bam_set in enumerate(bams):
         bam = bam_set[0]
         run(
@@ -367,22 +370,21 @@ def quantify_salmon(
                 "salmon_quant",
             ]
         )
-        quantified_bams.append(
+
+        path_tail = f"{run_name}/Quantification (salmon)/{sample_names[i]}/"
+        if custom_output_dir is None:
+            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+        else:
+            output_literal = custom_output_dir.remote_path + path_tail
+
+        sf_files.append(
             LatchFile(
                 "/root/salmon_quant/quant.sf",
-                f"latch:///RNA-Seq Outputs/{run_name}/Quantification"
-                f" (salmon)/{sample_names[i]}/{sample_names[i]}_quant.sf",
-            )
-        )
-        quantified_bams.append(
-            LatchFile(
-                "/root/salmon_quant/quant.sf",
-                f"latch:///RNA-Seq Outputs/{run_name}/Quantification"
-                f" (salmon)/{sample_names[i]}/{sample_names[i]}_quant.tsv",
+                output_literal,
             )
         )
 
-    return quantified_bams
+    return sf_files
 
 
 class AlignmentTools(Enum):
@@ -707,7 +709,11 @@ def rnaseq(
         custom_output_dir=custom_output_dir,
     )
     return quantify_salmon(
-        bams=bams, sample_names=sample_names, ref=latch_genome, run_name=run_name
+        bams=bams,
+        sample_names=sample_names,
+        ref=latch_genome,
+        run_name=run_name,
+        custom_output_dir=custom_output_dir,
     )
 
 
