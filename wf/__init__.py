@@ -251,6 +251,7 @@ def align_star(
     samples: List[Sample],
     ref: LatchGenome,
     run_name: str,
+    custom_output_dir: Optional[LatchDir] = None,
 ) -> (List[List[LatchFile]], List[str]):
 
     os.mkdir("STAR_index")
@@ -312,18 +313,19 @@ def align_star(
         )
 
         sample_names.append(sample.name)
+
+        # Return trimming reports as a side effect.
+        path_tail = f"{run_name}/Quality Control Data/Alignment (STAR)/{sample.name}/"
+
+        if custom_output_dir is None:
+            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+        else:
+            output_literal = custom_output_dir.remote_path + path_tail
+
         sample_bams.append(
             [
-                file_glob(
-                    "*out.bam",
-                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment"
-                    f" (STAR)/{sample.name}/",
-                )[0],
-                file_glob(
-                    "*sortedByCoord.out.bam",
-                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment"
-                    f" (STAR)/{sample.name}/",
-                )[0],
+                file_glob("*out.bam", output_literal)[0],
+                file_glob("*sortedByCoord.out.bam", output_literal)[0],
             ]
         )
     return sample_bams, sample_names
@@ -699,7 +701,10 @@ def rnaseq(
         custom_output_dir=custom_output_dir,
     )
     bams, sample_names = align_star(
-        samples=trimmed_samples, ref=latch_genome, run_name=run_name
+        samples=trimmed_samples,
+        ref=latch_genome,
+        run_name=run_name,
+        custom_output_dir=custom_output_dir,
     )
     return quantify_salmon(
         bams=bams, sample_names=sample_names, ref=latch_genome, run_name=run_name
