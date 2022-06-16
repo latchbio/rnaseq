@@ -186,6 +186,7 @@ def trimgalore(
     clip_r2: Optional[int] = None,
     three_prime_clip_r1: Optional[int] = None,
     three_prime_clip_r2: Optional[int] = None,
+    custom_output_dir: Union[None, LatchDir] = None,
 ) -> (List[Sample], List[LatchFile]):
 
     sample = samples[0]  # TODO
@@ -225,16 +226,14 @@ def trimgalore(
             )
 
         # Return trimming reports as a side effect.
-        trimmed_reports = file_glob(
-            "*trimming_report.txt",
-            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimming Reports"
-            f" (TrimeGalore)/{sample.name}/",
-        )
-        trimmed = file_glob(
-            "*fq*",
-            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimmed Reads"
-            f" (TrimeGalore)/{sample.name}/",
-        )
+        path_tail = f"{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/"
+        if custom_output_dir is None:
+            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+        else:
+            output_literal = custom_output_dir.remote_path + path_tail
+
+        trimmed_reports = file_glob("*trimming_report.txt", output_literal)
+        trimmed = file_glob("*fq*", output_literal)
 
         if type(reads) is SingleEndReads:
             trimmed_replicates.append(SingleEndReads(r1=trimmed[0]))
@@ -697,6 +696,7 @@ def rnaseq(
         three_prime_clip_r1=None,
         three_prime_clip_r2=None,
         run_name=run_name,
+        custom_output_dir=custom_output_dir,
     )
     bams, sample_names = align_star(
         samples=trimmed_samples, ref=latch_genome, run_name=run_name
