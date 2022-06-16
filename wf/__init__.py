@@ -232,10 +232,11 @@ def trimgalore(
             report_literal = "latch:///RNA-Seq Outputs/" + report_tail
             read_literal = "latch:///RNA-Seq Outputs/" + read_tail
         else:
-            if custom_output_dir.remote_path[-1] != "/":
-                custom_output_dir.remote_path += "/"
-            report_literal = custom_output_dir.remote_path + report_tail
-            read_literal = custom_output_dir.remote_path + read_tail
+            remote_path = custom_output_dir.remote_path
+            if remote_path[-1] != "/":
+                remote_path += "/"
+            report_literal = remote_path + report_tail
+            read_literal = remote_path + read_tail
 
         trimmed_reports = file_glob("*trimming_report.txt", report_literal)
         trimmed = file_glob("*fq*", read_literal)
@@ -323,9 +324,10 @@ def align_star(
         if custom_output_dir is None:
             output_literal = "latch:///RNA-Seq Outputs/" + path_tail
         else:
-            if custom_output_dir.remote_path[-1] != "/":
-                custom_output_dir.remote_path += "/"
-            output_literal = custom_output_dir.remote_path + path_tail
+            remote_path = custom_output_dir.remote_path
+            if remote_path[-1] != "/":
+                remote_path += "/"
+            output_literal = remote_path + path_tail
 
         sample_bams.append(
             [
@@ -379,9 +381,10 @@ def quantify_salmon(
         if custom_output_dir is None:
             output_literal = "latch:///RNA-Seq Outputs/" + path_tail
         else:
-            if custom_output_dir.remote_path[-1] != "/":
-                custom_output_dir.remote_path += "/"
-            output_literal = custom_output_dir.remote_path + path_tail
+            remote_path = custom_output_dir.remote_path
+            if remote_path[-1] != "/":
+                remote_path += "/"
+            output_literal = remote_path + path_tail
 
         sf_files.append(
             LatchFile(
