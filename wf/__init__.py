@@ -227,7 +227,7 @@ def trimgalore(
 
         # Return trimming reports as a side effect.
         report_tail = f"{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/"
-        read_tail = f"{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/"
+        read_tail = f"{run_name}/Quality Control Data/Trimming Reads (TrimeGalore)/{sample.name}/"
         if custom_output_dir is None:
             report_literal = "latch:///RNA-Seq Outputs/" + report_tail
             read_literal = "latch:///RNA-Seq Outputs/" + read_tail
