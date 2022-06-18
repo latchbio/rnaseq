@@ -391,14 +391,13 @@ def quantify_salmon(
 ) -> List[LatchFile]:
 
     gm = lgenome.GenomeManager(ref.name)
-    if custom_ref_trans is None:
-        local_trans = gm.download_ref_trans()
-    elif custom_ref_genome is None and custom_gtf is None:
-
+    if custom_ref_trans is not None:
+        local_trans = custom_ref_trans.local_path
+    elif custom_ref_genome is not None and custom_gtf is not None:
         os.mkdir("rsem")
         run(
             [
-                "rsem-prepare-reference",
+                "/root/RSEM-1.3.3/rsem-prepare-reference",
                 "--gtf",
                 custom_gtf.local_path,
                 "--num-threads",
@@ -407,9 +406,17 @@ def quantify_salmon(
                 "rsem/genome",
             ]
         )
-        local_trans = "/root/rsem/genome.transcripts.fa"
+        local_tmp_trans = "/root/rsem/genome.transcripts.fa"
+        run(
+            [
+                "/root/gentrome.sh",
+                custom_ref_genome.local_path,
+                local_tmp_trans,
+            ]
+        )
+        local_trans = "/root/gentrome.fa"
     else:
-        local_trans = custom_ref_trans.local_path
+        local_trans = gm.download_ref_trans()
 
     sf_files = []
     for i, bam_set in enumerate(bams):
@@ -430,7 +437,7 @@ def quantify_salmon(
             ]
         )
 
-        path_tail = f"{run_name}/Quantification (salmon)/{sample_names[i]}/"
+        path_tail = f"{run_name}/Quantification (salmon)/{sample_names[i]}/quant.sf"
         if custom_output_dir is None:
             output_literal = "latch:///RNA-Seq Outputs/" + path_tail
         else:
@@ -680,6 +687,8 @@ def rnaseq(
 
           __metadata__:
             display_name: salmon Index
+            appearance:
+                detail: (.tar.gz is only accepted extension)
 
         save_indices:
             If you provided a custom genome you can output the alignment
@@ -731,6 +740,8 @@ def rnaseq(
         sample_names=sample_names,
         ref=latch_genome,
         run_name=run_name,
+        custom_gtf=custom_gtf,
+        custom_ref_genome=custom_ref_genome,
         custom_ref_trans=custom_ref_trans,
         custom_output_dir=custom_output_dir,
     )
