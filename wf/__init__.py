@@ -384,6 +384,8 @@ def quantify_salmon(
     sample_names: List[str],
     run_name: str,
     ref: LatchGenome,
+    custom_ref_genome: Optional[LatchFile] = None,
+    custom_gtf: Optional[LatchFile] = None,
     custom_ref_trans: Optional[LatchFile] = None,
     custom_output_dir: Optional[LatchDir] = None,
 ) -> List[LatchFile]:
@@ -391,6 +393,21 @@ def quantify_salmon(
     gm = lgenome.GenomeManager(ref.name)
     if custom_ref_trans is None:
         local_trans = gm.download_ref_trans()
+    elif custom_ref_genome is None and custom_gtf is None:
+
+        os.mkdir("rsem")
+        run(
+            [
+                "rsem-prepare-reference",
+                "--gtf",
+                custom_gtf.local_path,
+                "--num-threads",
+                "96",
+                custom_ref_genome.local_path,
+                "rsem/genome",
+            ]
+        )
+        local_trans = "/root/rsem/genome.transcripts.fa"
     else:
         local_trans = custom_ref_trans.local_path
 
@@ -513,19 +530,12 @@ def rnaseq(
         - section: Alignment & Quantification
           flow:
             - text: >-
-                Two methods are available for the alignment and quantification
-                of your reads.  "Traditional alignment" is the more accurate
+                We use "Traditional alignment" as an accurate
                 but expensive (in terms of time and computing resources)
                 option. This method in this workflow employs
                 [STAR](https://github.com/alexdobin/STAR) for alignment and
                 [Salmon](https://salmon.readthedocs.io/en/latest/salmon.html)
                 for transcript quantification.
-
-                "Selective alignment" is a faster mapping algorithm that is
-                slightly less accurate.  This method uses Salmon to lightly map
-                reads and quantify transcripts.  Often the differences between
-                accuracy is minimal between these two methods - read more
-                [here](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02151-8).
             - fork: alignment_quantification_tools
               flows:
                 traditional:
@@ -561,48 +571,6 @@ def rnaseq(
                                         - params:
                                             - star_index
                                             - custom_ref_trans
-                selective:
-                    display_name: Selective Alignment
-                    flow:
-                    - fork: sa_ref_genome_fork
-                      flows:
-                        database:
-                            display_name: Select from Latch Genome Database
-                            _tmp_unwrap_optionals:
-                                - latch_genome
-                            flow:
-                                - text: >-
-                                    We have curated a set of reference
-                                    genome data for ease and
-                                    reproducibility. More information about
-                                    these managed files can be found
-                                    [here](https://github.com/latchbio/latch-genomes).
-                                - params:
-                                    - latch_genome
-                        custom:
-                            display_name: Provide Custom Genome
-                            _tmp_unwrap_optionals:
-                                - gtf
-                                - ref_genome
-                            flow:
-                                - text: >-
-                                    When providing custom reference
-                                    data to the selective alignment method,
-                                    only a reference transcriptome is
-                                    needed. This can be provided directly,
-                                    generated from a genome + annotation
-                                    file or provided pre-built as an index.
-                                - params:
-                                    - gtf
-                                    - ref_genome
-                                - spoiler: Optional Params
-                                  flow:
-                                    - text: >-
-                                        These files will be generated from the
-                                        GTF/Genome files if not provided.
-                                    - params:
-                                        - ref_transcript
-                                        - salmon_index
         - section: Output Settings
           flow:
           - params:
@@ -677,6 +645,8 @@ def rnaseq(
 
           __metadata__:
             display_name: Annotation File
+            appearance:
+                detail: (.gtf)
 
         bams:
           foobar
