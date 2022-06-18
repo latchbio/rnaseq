@@ -356,15 +356,8 @@ def quantify_salmon(
     custom_output_dir: Optional[LatchDir] = None,
 ) -> List[LatchFile]:
 
-    run(
-        [
-            "aws",
-            "s3",
-            "cp",
-            "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/GCF_000001405.40_GRCh38.p14_genomic.transcripts.decoy.fna",
-            ".",
-        ]
-    )
+    gm = lgenome.GenomeManager(ref.name)
+    local_trans = gm.download_trans()
 
     sf_files = []
     for i, bam_set in enumerate(bams):
@@ -374,7 +367,7 @@ def quantify_salmon(
                 "salmon",
                 "quant",
                 "-t",
-                str("GCF_000001405.40_GRCh38.p14_genomic.transcripts.decoy.fna"),
+                str(local_trans),
                 "-a",
                 str(bam.local_path),
                 "--threads",
