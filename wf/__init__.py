@@ -165,11 +165,6 @@ class CustomGenome:
     STAR_index: Optional[LatchFile]
 
 
-download_gtf()
-
-download_ref_genome()
-
-
 @dataclass_json
 @dataclass
 class GenomeData:
@@ -264,31 +259,65 @@ def trimgalore(
     return [trimmed_sample], trimmed_reports
 
 
+class InsufficientCustomGenomeResources(Exception):
+    pass
+
+
+class MalformedSTARIndex(Exception):
+    pass
+
+
 @large_spot_task
 def align_star(
     samples: List[Sample],
     run_name: str,
     ref: LatchGenome,
+    custom_ref_genome: Optional[LatchFile] = None,
+    custom_gtf: Optional[LatchFile] = None,
     custom_star_idx: Optional[LatchFile] = None,
     custom_output_dir: Optional[LatchDir] = None,
 ) -> (List[List[LatchFile]], List[str]):
 
-    gm = lgenome.GenomeManager(ref.name)
-    local_gtf = gm.download_gtf()
+    if custom_ref_genome is None:
+        gm = lgenome.GenomeManager(ref.name)
+        local_gtf = gm.download_gtf()
 
-    # NOTE: STAR expects the index to be named "STAR_index".
-    if custom_star_idx is None:
         gm.download_STAR_index()
     else:
-        # Ensure input is .tar.gz
-        run(
-            [
-                "tar",
-                "-xzvf",
-                custom_star_idx.local_path,
-            ]
-        )
-        # Ensure output is "STAR_index".
+
+        if custom_ref_genome is None and custom_gtf is None:
+            raise InsufficientCustomGenomeResources(
+                "Both a custom reference genome + GTF file need to be provided."
+            )
+        local_gtf = custom_gtf.local_path
+        local_ref_genome = custom_ref_genome.local_path
+        if custom_star_idx is None:
+            run(
+                "STAR",
+                "--runMode",
+                "genomeGenerate",
+                "--genomeDir",
+                "STAR_index",
+                "--genomeFastaFiles",
+                str(local_ref_genome),
+                "--sjdbGTFfile",
+                str(local_gtf),
+                "--runThreadN",
+                "96",
+            )
+        else:
+            # TODO: validate provided index...
+            run(
+                [
+                    "tar",
+                    "-xzvf",
+                    custom_star_idx.local_path,
+                ]
+            )
+            if Path("STAR_index").is_dir() is False:
+                raise MalformedSTARIndex(
+                    "The custom STAR index provided must be a directory named 'STAR_index'"
+                )
 
     sample = samples[0]  # TODO
 
@@ -351,13 +380,17 @@ def align_star(
 def quantify_salmon(
     bams: List[List[LatchFile]],
     sample_names: List[str],
-    ref: LatchGenome,
     run_name: str,
+    ref: LatchGenome,
+    custom_ref_trans: Optional[LatchFile] = None,
     custom_output_dir: Optional[LatchDir] = None,
 ) -> List[LatchFile]:
 
     gm = lgenome.GenomeManager(ref.name)
-    local_trans = gm.download_trans()
+    if custom_ref_trans is None:
+        local_trans = gm.download_ref_trans()
+    else:
+        local_trans = custom_ref_trans.local_path
 
     sf_files = []
     for i, bam_set in enumerate(bams):
@@ -412,9 +445,9 @@ def rnaseq(
     run_name: str,
     latch_genome: LatchGenome,
     bams: List[List[LatchFile]],
-    gtf: Optional[LatchFile] = None,
-    ref_genome: Optional[LatchFile] = None,
-    ref_transcript: Optional[LatchFile] = None,
+    custom_gtf: Optional[LatchFile] = None,
+    custom_ref_genome: Optional[LatchFile] = None,
+    custom_ref_trans: Optional[LatchFile] = None,
     star_index: Optional[LatchFile] = None,
     salmon_index: Optional[LatchFile] = None,
     save_indices: bool = False,
@@ -493,6 +526,39 @@ def rnaseq(
                 [here](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02151-8).
             - fork: alignment_quantification_tools
               flows:
+                traditional:
+                    display_name: Traditional Alignment
+                    flow:
+                        - fork: ta_ref_genome_fork
+                          flows:
+                            database:
+                                display_name: Select from Latch Genome Database
+                                flow:
+                                    - text: >-
+                                        We have curated a set of reference
+                                        genome data for ease and
+                                        reproducibility. More information about
+                                        these managed files can be found
+                                        [here](https://github.com/latchbio/latch-genomes).
+                                    - params:
+                                        - latch_genome
+                            custom:
+                                display_name: Provide Custom Genome
+                                _tmp_unwrap_optionals:
+                                    - custom_gtf
+                                    - custom_ref_genome
+                                flow:
+                                    - params:
+                                        - custom_ref_genome
+                                        - custom_gtf
+                                    - spoiler: Optional Params
+                                      flow:
+                                        - text: >-
+                                            These files will be generated from the
+                                            GTF/Genome files if not provided.
+                                        - params:
+                                            - star_index
+                                            - custom_ref_trans
                 selective:
                     display_name: Selective Alignment
                     flow:
@@ -535,39 +601,6 @@ def rnaseq(
                                     - params:
                                         - ref_transcript
                                         - salmon_index
-                traditional:
-                    display_name: Traditional Alignment
-                    flow:
-                        - fork: ta_ref_genome_fork
-                          flows:
-                            database:
-                                display_name: Select from Latch Genome Database
-                                flow:
-                                    - text: >-
-                                        We have curated a set of reference
-                                        genome data for ease and
-                                        reproducibility. More information about
-                                        these managed files can be found
-                                        [here](https://github.com/latchbio/latch-genomes).
-                                    - params:
-                                        - latch_genome
-                            custom:
-                                display_name: Provide Custom Genome
-                                _tmp_unwrap_optionals:
-                                    - gtf
-                                    - ref_genome
-                                flow:
-                                    - params:
-                                        - gtf
-                                        - ref_genome
-                                    - spoiler: Optional Params
-                                      flow:
-                                        - text: >-
-                                            These files will be generated from the
-                                            GTF/Genome files if not provided.
-                                        - params:
-                                            - ref_transcript
-                                            - star_index
         - section: Output Settings
           flow:
           - params:
@@ -628,7 +661,7 @@ def rnaseq(
           __metadata__:
             display_name: Reference Genome Source
 
-        ref_genome:
+        custom_ref_genome:
           The reference genome you want to align you samples to.
 
           __metadata__:
@@ -636,7 +669,7 @@ def rnaseq(
             appearance:
                 detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
 
-        gtf:
+        custom_gtf:
           The gene annonation file that corresponds to the reference genome
           provided.
 
@@ -649,14 +682,14 @@ def rnaseq(
           __metadata__:
             display_name: bams
 
-        ref_transcript:
+        custom_ref_trans:
           If not provided the workflow will generate from the Annotation File
           and Reference Genome File.
 
           __metadata__:
             display_name: Reference Transcript File (optional)
-                appearance:
-                    detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
+            appearance:
+                detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
 
         star_index:
           You are able to provide a zipped prebuilt STAR alignment index for
@@ -714,16 +747,19 @@ def rnaseq(
     )
     bams, sample_names = align_star(
         samples=trimmed_samples,
-        ref=latch_genome,
         run_name=run_name,
-        custom_output_dir=custom_output_dir,
+        ref=latch_genome,
+        custom_ref_genome=custom_ref_genome,
+        custom_gtf=custom_gtf,
         custom_star_idx=star_index,
+        custom_output_dir=custom_output_dir,
     )
     return quantify_salmon(
         bams=bams,
         sample_names=sample_names,
         ref=latch_genome,
         run_name=run_name,
+        custom_ref_trans=custom_ref_trans,
         custom_output_dir=custom_output_dir,
     )
 
