@@ -293,17 +293,19 @@ def align_star(
         local_ref_genome = custom_ref_genome.local_path
         if custom_star_idx is None:
             run(
-                "STAR",
-                "--runMode",
-                "genomeGenerate",
-                "--genomeDir",
-                "STAR_index",
-                "--genomeFastaFiles",
-                str(local_ref_genome),
-                "--sjdbGTFfile",
-                str(local_gtf),
-                "--runThreadN",
-                "96",
+                [
+                    "STAR",
+                    "--runMode",
+                    "genomeGenerate",
+                    "--genomeDir",
+                    "STAR_index",
+                    "--genomeFastaFiles",
+                    str(local_ref_genome),
+                    "--sjdbGTFfile",
+                    str(local_gtf),
+                    "--runThreadN",
+                    "96",
+                ]
             )
         else:
             # TODO: validate provided index...
