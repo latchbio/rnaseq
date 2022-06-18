@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 from urllib.parse import urlparse
 
+import lgenome
 from dataclasses_json import dataclass_json
 from flytekit import LaunchPlan, task
 from flytekitplugins.pod import Pod
@@ -164,6 +165,17 @@ class CustomGenome:
     STAR_index: Optional[LatchFile]
 
 
+download_gtf()
+
+download_ref_genome()
+
+
+@dataclass_json
+@dataclass
+class GenomeData:
+    gtf: LatchFile
+
+
 @small_task
 def parse_inputs(
     genome: Union[LatchGenome, CustomGenome],
@@ -255,32 +267,28 @@ def trimgalore(
 @large_spot_task
 def align_star(
     samples: List[Sample],
-    ref: LatchGenome,
     run_name: str,
+    ref: LatchGenome,
+    custom_star_idx: Optional[LatchFile] = None,
     custom_output_dir: Optional[LatchDir] = None,
 ) -> (List[List[LatchFile]], List[str]):
 
-    os.mkdir("STAR_index")
+    gm = lgenome.GenomeManager(ref.name)
+    local_gtf = gm.download_gtf()
 
-    run(
-        [
-            "aws",
-            "s3",
-            "sync",
-            "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/STAR_index",
-            "STAR_index",
-        ]
-    )
-
-    run(
-        [
-            "aws",
-            "s3",
-            "cp",
-            "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/GCF_000001405.40_GRCh38.p14_genomic.stripped.gtf",
-            ".",
-        ]
-    )
+    # NOTE: STAR expects the index to be named "STAR_index".
+    if custom_star_idx is None:
+        gm.download_STAR_index()
+    else:
+        # Ensure input is .tar.gz
+        run(
+            [
+                "tar",
+                "-xzvf",
+                custom_star_idx.local_path,
+            ]
+        )
+        # Ensure output is "STAR_index".
 
     sample = samples[0]  # TODO
 
@@ -310,7 +318,7 @@ def align_star(
                 "--outFileNamePrefix",
                 sample.name,
                 "--sjdbGTFfile",
-                "GCF_000001405.40_GRCh38.p14_genomic.stripped.gtf",
+                str(local_gtf),
                 "--outSAMtype",
                 "BAM",
                 "Unsorted",
@@ -716,6 +724,7 @@ def rnaseq(
         ref=latch_genome,
         run_name=run_name,
         custom_output_dir=custom_output_dir,
+        custom_star_idx=star_index,
     )
     return quantify_salmon(
         bams=bams,
