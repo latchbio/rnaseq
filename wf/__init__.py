@@ -440,9 +440,6 @@ def run_multiqc(
 
     run(["multiqc", *paths])
 
-    for i in Path.cwd().iterdir():
-        print(i.name)
-
     return LatchFile(
         "multiqc_report.html",
         f"latch:///RNA-Seq Outputs/{run_name}/multiqc_report.html",
