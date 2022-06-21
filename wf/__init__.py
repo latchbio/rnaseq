@@ -1,5 +1,6 @@
 """latch/rnaseq"""
 
+import functools
 import os
 import subprocess
 import types
@@ -12,14 +13,24 @@ from urllib.parse import urlparse
 from dataclasses_json import dataclass_json
 from flytekit import LaunchPlan, task
 from flytekitplugins.pod import Pod
-from kubernetes.client.models import (V1Container, V1PodSpec,
-                                      V1ResourceRequirements, V1Toleration)
+from kubernetes.client.models import (
+    V1Container,
+    V1PodSpec,
+    V1ResourceRequirements,
+    V1Toleration,
+)
 from latch import small_task, workflow
 from latch.types import LatchDir, LatchFile
 from latch.types.glob import file_glob
 
+print = functools.partial(print, flush=True)
+
 
 def run(cmd: List[str]):
+    print("-" * 30)
+    print("Running command:")
+    for c in cmd:
+        print(f"    {c}")
     subprocess.run(cmd, check=True)
 
 
@@ -191,7 +202,9 @@ def trimgalore(
     sample = samples[0]  # TODO
 
     trimmed_sample = Sample(
-        name=sample.name, strandedness=sample.strandedness, replicates=[]
+        name=sample.name,
+        strandedness=sample.strandedness,
+        replicates=[],
     )
     trimmed_replicates = []
     trimmed_reports = []
@@ -252,7 +265,7 @@ def align_star(
     samples: List[Sample],
     ref: LatchGenome,
     run_name: str,
-) -> (List[List[LatchFile]], List[str]):
+) -> (List[List[LatchFile]], List[str], List[LatchFile]):
 
     os.mkdir("STAR_index")
 
@@ -327,7 +340,25 @@ def align_star(
                 )[0],
             ]
         )
-    return sample_bams, sample_names
+
+    log_files = [
+        LatchFile(
+            f"{sample.name}Log.out",
+            f"latch:///RNA-Seq Outputs/{run_name}/Alignment (STAR)/logs/Log.out",
+        ),
+        LatchFile(
+            f"{sample.name}Log.progress.out",
+            f"latch:///RNA-Seq Outputs/{run_name}"
+            f"/Alignment (STAR)/logs/Log.progress.out",
+        ),
+        LatchFile(
+            f"{sample.name}Log.final.out",
+            f"latch:///RNA-Seq Outputs/{run_name}"
+            f"/Alignment (STAR)/logs/Log.final.out",
+        ),
+    ]
+
+    return sample_bams, sample_names, log_files
 
 
 @large_spot_task
@@ -382,6 +413,40 @@ def quantify_salmon(
         )
 
     return quantified_bams
+
+
+@small_task
+def run_multiqc(
+    run_name: str,
+    reports: List[LatchFile],
+    bams: List[List[LatchFile]],
+    sample_names: List[str],  # TODO incorporate this somewhere
+    log_files: List[LatchFile],
+    quantified_bams: List[LatchFile],
+) -> LatchFile:
+    # download all the files
+    # TODO make this less stupid
+    paths = []
+    for s in reports:
+        paths.append(s.local_path)
+    for s in log_files:
+        paths.append(s.local_path)
+    for s in quantified_bams:
+        paths.append(s.local_path)
+
+    for l in bams:
+        for s in l:
+            paths.append(s.local_path)
+
+    run(["multiqc", *paths])
+
+    for i in Path.cwd().iterdir():
+        print(i.name)
+
+    return LatchFile(
+        "multiqc_report.html",
+        f"latch:///RNA-Seq Outputs/{run_name}/multiqc_report.html",
+    )
 
 
 class AlignmentTools(Enum):
@@ -698,12 +763,26 @@ def rnaseq(
         three_prime_clip_r2=None,
         run_name=run_name,
     )
-    bams, sample_names = align_star(
-        samples=trimmed_samples, ref=latch_genome, run_name=run_name
+    bams, sample_names, log_files = align_star(
+        samples=trimmed_samples,
+        ref=latch_genome,
+        run_name=run_name,
     )
-    return quantify_salmon(
-        bams=bams, sample_names=sample_names, ref=latch_genome, run_name=run_name
+    quantified_bams = quantify_salmon(
+        bams=bams,
+        sample_names=sample_names,
+        ref=latch_genome,
+        run_name=run_name,
     )
+    multiqc_report = run_multiqc(
+        run_name=run_name,
+        reports=reports,
+        bams=bams,
+        sample_names=sample_names,
+        log_files=log_files,
+        quantified_bams=quantified_bams,
+    )
+    return quantified_bams
 
 
 if __name__ == "wf":
