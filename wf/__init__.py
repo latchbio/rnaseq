@@ -437,7 +437,7 @@ def quantify_salmon(
             ]
         )
 
-        path_tail = f"{run_name}/Quantification (salmon)/{sample_names[i]}/quant.sf"
+        path_tail = f"{run_name}/Quantification (salmon)/{sample_names[i]}/{sample_names[i]}_quant.sf"
         if custom_output_dir is None:
             output_literal = "latch:///RNA-Seq Outputs/" + path_tail
         else:
@@ -448,7 +448,7 @@ def quantify_salmon(
 
         sf_files.append(
             LatchFile(
-                "/root/salmon_quant/quant.sf",
+                f"/root/salmon_quant/quant.sf",
                 output_literal,
             )
         )
