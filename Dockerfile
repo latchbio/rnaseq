@@ -18,6 +18,8 @@ RUN curl -L https://github.com/COMBINE-lab/salmon/releases/download/v1.8.0/salmo
   mv salmon-1.8.0_linux_x86_64/lib/* /lib/x86_64-linux-gnu/ &&\
   rm -rf salmon-1.8.0 salmon-1.8.0_linux_x86_64.tar.gz
 
+RUN python3 -m pip install multiqc
+
 RUN python3 -m pip install --upgrade latch
 COPY wf /root/wf
 ARG tag
