@@ -282,198 +282,138 @@ class InsufficientCustomGenomeResources(Exception):
     pass
 
 
-class MalformedSTARIndex(Exception):
+class MalformedSalmonIndex(Exception):
     pass
 
 
 @large_spot_task
-def align_star(
+def sa_salmon(
     samples: List[Sample],
     run_name: str,
     ref: LatchGenome,
     custom_ref_genome: Optional[LatchFile] = None,
     custom_gtf: Optional[LatchFile] = None,
-    custom_star_idx: Optional[LatchFile] = None,
+    custom_ref_trans: Optional[LatchFile] = None,
+    custom_salmon_idx: Optional[LatchFile] = None,
     custom_output_dir: Optional[LatchDir] = None,
-) -> Tuple[List[List[LatchFile]], List[str], List[LatchFile]]:
+) -> Tuple[List[LatchFile], LatchDir]:
 
-    if custom_ref_genome is None:
-        gm = lgenome.GenomeManager(ref.name)
-        local_gtf = gm.download_gtf()
+    gm = lgenome.GenomeManager(ref.name)
 
-        gm.download_STAR_index()
-    else:
+    # lgenome
+    # decoy = ref genome + transcript
+    # genome + gtf = transcript
 
-        if custom_gtf is None:
+    if custom_salmon_idx is not None:
+        # TODO: validate provided index...
+        run(
+            [
+                "tar",
+                "-xzvf",
+                custom_salmon_idx.local_path,
+            ]
+        )
+        if Path("salmon_index").is_dir() is False:
+            raise MalformedSalmonIndex(
+                "The custom Salmon index provided must be a directory named 'salmon_index'"
+            )
+
+    elif custom_ref_genome is not None:
+
+        def _build_gentrome(genome: Path, transcript: Path) -> Path:
+            run(
+                [
+                    "/root/gentrome.sh",
+                    str(genome),
+                    str(transcript),
+                ]
+            )
+            return Path("/root/gentrome.fa")
+
+        def _build_transcript(genome: Path, gtf: Path) -> Path:
+            run(
+                [
+                    "/root/RSEM-1.3.3/rsem-prepare-reference",
+                    "--gtf",
+                    str(gtf),
+                    "--num-threads",
+                    "96",
+                    str(genome),
+                    "rsem/genome",
+                ]
+            )
+            return Path("/root/rsem/genome.transcripts.fa")
+
+        def _build_index(gentrome: Path) -> Path:
+            run(
+                [
+                    "salmon",
+                    "index",
+                    "-t",
+                    str(gentrome),
+                    "-i" "salmon_index" "--decoys",
+                    "decoys.txt",  # Comes from gentrome.sh
+                    "-k",
+                    "31",
+                ]
+            )
+            return Path("/root/salmon_index")
+
+        # Several ways to recover from missing files:
+        #   1. Build a gentrome from provided genome + transcriptome
+        #   2. First build a transcriptome from a genome + gtf, then 1.
+        if custom_ref_trans is not None:
+            gentrome = _build_gentrome(
+                custom_ref_genome.local_path, custom_ref_trans.local_path
+            )
+            local_index = _build_index(gentrome)
+        elif custom_gtf is not None:
+            local_ref_trans = _build_transcript(
+                custom_ref_genome.local_path, custom_gtf.local_path
+            )
+            gentrome = _build_gentrome(custom_ref_genome.local_path, local_ref_trans)
+            local_index = _build_index(gentrome)
+        else:
             raise InsufficientCustomGenomeResources(
                 "Both a custom reference genome + GTF file need to be provided."
             )
-        local_gtf = custom_gtf.local_path
-        local_ref_genome = custom_ref_genome.local_path
-        if custom_star_idx is None:
-            run(
-                [
-                    "STAR",
-                    "--runMode",
-                    "genomeGenerate",
-                    "--genomeDir",
-                    "STAR_index",
-                    "--genomeFastaFiles",
-                    str(local_ref_genome),
-                    "--sjdbGTFfile",
-                    str(local_gtf),
-                    "--runThreadN",
-                    "96",
-                ]
-            )
-        else:
-            # TODO: validate provided index...
-            run(
-                [
-                    "tar",
-                    "-xzvf",
-                    custom_star_idx.local_path,
-                ]
-            )
-            if Path("STAR_index").is_dir() is False:
-                raise MalformedSTARIndex(
-                    "The custom STAR index provided must be a directory named 'STAR_index'"
-                )
+    else:
+        local_index = gm.download_salmon_index()
+
+    sf_files = []
 
     sample = samples[0]  # TODO
-
-    sample_bams = []
-    sample_names = []
     for reads in sample.replicates:
 
         if type(reads) is SingleEndReads:
-            reads = [str(reads.r1.local_path)]
+            reads = ["-r", str(reads.r1.local_path)]
         else:
-            reads = [str(reads.r1.local_path), str(reads.r2.local_path)]
+            reads = ["-1", str(reads.r1.local_path), "-2", str(reads.r2.local_path)]
 
         for i, read in enumerate(reads):
             if read[-3:] == ".gz":
                 run(["gunzip", read])
                 reads[i] = read[:-3]
-
-        run(
-            [
-                "STAR",
-                "--genomeDir",
-                "STAR_index",
-                "--readFilesIn",
-                *reads,
-                "--runThreadN",
-                str(96),
-                "--outFileNamePrefix",
-                sample.name,
-                "--sjdbGTFfile",
-                str(local_gtf),
-                "--outSAMtype",
-                "BAM",
-                "Unsorted",
-                "SortedByCoordinate",
-            ]
-        )
-
-        sample_names.append(sample.name)
-
-        path_tail = f"{run_name}/Alignment (STAR)/{sample.name}/"
-        if custom_output_dir is None:
-            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
-        else:
-            remote_path = custom_output_dir.remote_path
-            if remote_path[-1] != "/":
-                remote_path += "/"
-            output_literal = remote_path + path_tail
-
-        sample_bams.append(
-            [
-                file_glob("*out.bam", output_literal)[0],
-                file_glob("*sortedByCoord.out.bam", output_literal)[0],
-            ]
-        )
-
-    log_files = [
-        LatchFile(
-            f"{sample.name}Log.out",
-            f"latch:///RNA-Seq Outputs/{run_name}/Alignment (STAR)/logs/Log.out",
-        ),
-        LatchFile(
-            f"{sample.name}Log.progress.out",
-            f"latch:///RNA-Seq Outputs/{run_name}"
-            f"/Alignment (STAR)/logs/Log.progress.out",
-        ),
-        LatchFile(
-            f"{sample.name}Log.final.out",
-            f"latch:///RNA-Seq Outputs/{run_name}"
-            f"/Alignment (STAR)/logs/Log.final.out",
-        ),
-    ]
-
-    return sample_bams, sample_names, log_files
-
-
-@large_spot_task
-def quantify_salmon(
-    bams: List[List[LatchFile]],
-    sample_names: List[str],
-    run_name: str,
-    ref: LatchGenome,
-    custom_ref_genome: Optional[LatchFile] = None,
-    custom_gtf: Optional[LatchFile] = None,
-    custom_ref_trans: Optional[LatchFile] = None,
-    custom_output_dir: Optional[LatchDir] = None,
-) -> List[LatchFile]:
-
-    gm = lgenome.GenomeManager(ref.name)
-    if custom_ref_trans is not None:
-        local_trans = custom_ref_trans.local_path
-    elif custom_ref_genome is not None and custom_gtf is not None:
-        os.mkdir("rsem")
-        run(
-            [
-                "/root/RSEM-1.3.3/rsem-prepare-reference",
-                "--gtf",
-                custom_gtf.local_path,
-                "--num-threads",
-                "96",
-                custom_ref_genome.local_path,
-                "rsem/genome",
-            ]
-        )
-        local_tmp_trans = "/root/rsem/genome.transcripts.fa"
-        run(
-            [
-                "/root/gentrome.sh",
-                custom_ref_genome.local_path,
-                local_tmp_trans,
-            ]
-        )
-        local_trans = "/root/gentrome.fa"
-    else:
-        local_trans = gm.download_ref_trans()
-
-    sf_files = []
-    for i, bam_set in enumerate(bams):
-        bam = bam_set[0]
         run(
             [
                 "salmon",
                 "quant",
-                "-t",
-                str(local_trans),
-                "-a",
-                str(bam.local_path),
+                "-i",
+                str(local_index),
+                "-l",
+                "A",
+                *reads,
                 "--threads",
                 str(96),
-                "--libType=A",
+                "--validateMappings",
                 "-o",
                 "salmon_quant",
             ]
         )
 
-        path_tail = f"{run_name}/Quantification (salmon)/{sample_names[i]}/{sample_names[i]}_quant.sf"
+        path_tail = (
+            f"{run_name}/Quantification (salmon)/{sample.name}/{sample.name}_quant.sf"
+        )
         if custom_output_dir is None:
             output_literal = "latch:///RNA-Seq Outputs/" + path_tail
         else:
@@ -484,12 +424,25 @@ def quantify_salmon(
 
         sf_files.append(
             LatchFile(
-                f"/root/salmon_quant/quant.sf",
+                f"/root/salmon_quant/{sample.name}_quant.sf",
                 output_literal,
             )
         )
 
-    return sf_files
+    path_tail = (
+        f"{run_name}/Quantification (salmon)/Auxilliary Files"
+    )
+    if custom_output_dir is None:
+        output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+    else:
+        remote_path = custom_output_dir.remote_path
+        if remote_path[-1] != "/":
+            remote_path += "/"
+        output_literal = remote_path + path_tail
+
+    aux_files = LatchDir(f"/root/salmon_quant/aux_files", output_literal)
+
+    return sf_files, aux_files
 
 
 @small_task
@@ -505,57 +458,59 @@ def run_qc_metrics(
     quantified_bams: List[LatchFile],
 ):
     # RSeQC
-    rseqc_path = Path("/root/RSeQC")
-    rseqc_path.mkdir(exist_ok=True)
-    if custom_gtf is None:
-        gm = lgenome.GenomeManager(ref.name)
-        gtf_path = gm.download_gtf().resolve()
-    else:
-        gtf_path = Path(custom_gtf).resolve()
+    # rseqc_path = Path("/root/RSeQC")
+    # rseqc_path.mkdir(exist_ok=True)
+    # if custom_gtf is None:
+    #     gm = lgenome.GenomeManager(ref.name)
+    #     gtf_path = gm.download_gtf().resolve()
+    # else:
+    #     gtf_path = Path(custom_gtf).resolve()
 
-    bed_path = gtf_path.with_suffix(".bed")
+    # bed_path = gtf_path.with_suffix(".bed")
 
-    with open(gtf_path, "r") as gtf, open(bed_path, "w") as bed:
-        subprocess.run(["gtf2bed"], stdin=gtf, stdout=bed)
+    # with open(gtf_path, "r") as gtf, open(bed_path, "w") as bed:
+    #     subprocess.run(["gtf2bed"], stdin=gtf, stdout=bed)
 
-    for lst in sample_bams:
-        for i, bam in enumerate(lst):
-            bam_path = Path(bam).resolve()
-            name = sample_names[i]
+    # for lst in sample_bams:
+    #     for i, bam in enumerate(lst):
+    #         bam_path = Path(bam).resolve()
+    #         name = sample_names[i]
 
-            bam_stats_path = rseqc_path / "BAM Stats"
-            bam_stats_path.mkdir(exist_ok=True)
-            run(
-                ["bam_stat.py", "-i", bam_path],
-                output=bam_stats_path / f"{name}_{i}_bam_stat.txt",
-            )
+    #         bam_stats_path = rseqc_path / "BAM Stats"
+    #         bam_stats_path.mkdir(exist_ok=True)
+    #         run(
+    #             ["bam_stat.py", "-i", bam_path],
+    #             output=bam_stats_path / f"{name}_{i}_bam_stat.txt",
+    #         )
 
-            infer_path = rseqc_path / "Inferred Experiments"
-            infer_path.mkdir(exist_ok=True)
-            run(
-                [
-                    "infer_experiment.py",
-                    "-r",
-                    bed_path,
-                    "-i",
-                    bam_path,
-                ],
-                output=infer_path / "{name}_{i}_infer_experiment.txt",
-            )
+    #         infer_path = rseqc_path / "Inferred Experiments"
+    #         infer_path.mkdir(exist_ok=True)
+    #         run(
+    #             [
+    #                 "infer_experiment.py",
+    #                 "-r",
+    #                 bed_path,
+    #                 "-i",
+    #                 bam_path,
+    #             ],
+    #             output=infer_path / "{name}_{i}_infer_experiment.txt",
+    #         )
 
-            junction_path = rseqc_path / "Junction Saturation"
-            junction_path.mkdir(exist_ok=True)
-            run(
-                [
-                    "junction_saturation.py",
-                    "-r",
-                    bed_path,
-                    "-i",
-                    bam_path,
-                    "-o",
-                    junction_path / f"{name}_{i}",
-                ]
-            )
+    #         junction_path = rseqc_path / "Junction Saturation"
+    #         junction_path.mkdir(exist_ok=True)
+    #         run(
+    #             [
+    #                 "junction_saturation.py",
+    #                 "-r",
+    #                 bed_path,
+    #                 "-i",
+    #                 bam_path,
+    #                 "-o",
+    #                 junction_path / f"{name}_{i}",
+    #             ]
+    #         )
+
+
 
 
 @small_task
@@ -565,7 +520,7 @@ def run_multiqc(
     sample_bams: List[List[LatchFile]],
     sample_names: List[str],  # TODO incorporate this somewhere
     log_files: List[LatchFile],
-    quantified_bams: List[LatchFile],
+    quantified: List[LatchFile],
 ) -> LatchFile:
     # download all the files
     # TODO make this less stupid
@@ -574,7 +529,7 @@ def run_multiqc(
         paths.append(s.local_path)
     for s in log_files:
         paths.append(s.local_path)
-    for s in quantified_bams:
+    for s in quantified:
         paths.append(s.local_path)
 
     for l in sample_bams:
@@ -859,23 +814,14 @@ def rnaseq(
         run_name=run_name,
         custom_output_dir=custom_output_dir,
     )
-    sample_bams, sample_names, log_files = align_star(
+    quantified = sa_salmon(
         samples=trimmed_samples,
-        run_name=run_name,
-        ref=latch_genome,
-        custom_ref_genome=custom_ref_genome,
-        custom_gtf=custom_gtf,
-        custom_star_idx=star_index,
-        custom_output_dir=custom_output_dir,
-    )
-    quantified_bams = quantify_salmon(
-        bams=sample_bams,
-        sample_names=sample_names,
         ref=latch_genome,
         run_name=run_name,
         custom_gtf=custom_gtf,
         custom_ref_genome=custom_ref_genome,
         custom_ref_trans=custom_ref_trans,
+        custom_salmon_idx=salmon_index,
         custom_output_dir=custom_output_dir,
     )
     multiqc_report = run_multiqc(
@@ -884,9 +830,9 @@ def rnaseq(
         sample_bams=sample_bams,
         sample_names=sample_names,
         log_files=log_files,
-        quantified_bams=quantified_bams,
+        quantified=quantified,
     )
-    return quantified_bams
+    return multiqc_report
 
 
 if __name__ == "wf":
