@@ -285,7 +285,7 @@ def align_star(
         gm.download_STAR_index()
     else:
 
-        if custom_ref_genome is None and custom_gtf is None:
+        if custom_gtf is None:
             raise InsufficientCustomGenomeResources(
                 "Both a custom reference genome + GTF file need to be provided."
             )
@@ -496,7 +496,7 @@ def rnaseq(
 
     ## Alignment & Quantification Methods
 
-    There are two methods availible in this workflow for doing alignment and quantification:
+    There are two methods availible for doing alignment and quantification:
 
     ### Traditional Alignment
 
