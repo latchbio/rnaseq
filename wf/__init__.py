@@ -27,12 +27,16 @@ from latch.types.glob import file_glob
 print = functools.partial(print, flush=True)
 
 
-def run(cmd: List[str]):
+def run(cmd: List[str], output: Optional[Path] = None):
     print("-" * 30)
     print("Running command:")
     for c in cmd:
         print(f"    {c}")
-    subprocess.run(cmd, check=True)
+    if output is None:
+        subprocess.run(cmd, check=True)
+    else:
+        with open(output, "w") as output_file:
+            subprocess.run(cmd, check=True, stdout=output_file)
 
 
 def _find_locals_in_set(param_set: set) -> List[str]:
@@ -69,7 +73,9 @@ def _is_valid_url(raw_url: str) -> bool:
 
 
 def file_glob(
-    pattern: str, remote_directory: str, target_dir: Optional[Path] = None
+    pattern: str,
+    remote_directory: str,
+    target_dir: Optional[Path] = None,
 ) -> List[LatchFile]:
     """Constructs a list of LatchFiles from a glob pattern.
     Convenient utility for passing collections of files between tasks. See
@@ -289,7 +295,7 @@ def align_star(
     custom_gtf: Optional[LatchFile] = None,
     custom_star_idx: Optional[LatchFile] = None,
     custom_output_dir: Optional[LatchDir] = None,
-) -> Tuple[List[LatchFile], List[List[LatchFile]], List[str]]:
+) -> Tuple[List[List[LatchFile]], List[str], List[LatchFile]]:
 
     if custom_ref_genome is None:
         gm = lgenome.GenomeManager(ref.name)
@@ -487,10 +493,76 @@ def quantify_salmon(
 
 
 @small_task
+def run_qc_metrics(
+    samples: List[Sample],
+    ref: LatchGenome,
+    custom_gtf: Optional[LatchFile],
+    run_name: str,
+    reports: List[LatchFile],
+    sample_bams: List[List[LatchFile]],
+    sample_names: List[str],
+    log_files: List[LatchFile],
+    quantified_bams: List[LatchFile],
+):
+    # RSeQC
+    rseqc_path = Path("/root/RSeQC")
+    rseqc_path.mkdir(exist_ok=True)
+    if custom_gtf is None:
+        gm = lgenome.GenomeManager(ref.name)
+        gtf_path = gm.download_gtf().resolve()
+    else:
+        gtf_path = Path(custom_gtf).resolve()
+
+    bed_path = gtf_path.with_suffix(".bed")
+
+    with open(gtf_path, "r") as gtf, open(bed_path, "w") as bed:
+        subprocess.run(["gtf2bed"], stdin=gtf, stdout=bed)
+
+    for lst in sample_bams:
+        for i, bam in enumerate(lst):
+            bam_path = Path(bam).resolve()
+            name = sample_names[i]
+
+            bam_stats_path = rseqc_path / "BAM Stats"
+            bam_stats_path.mkdir(exist_ok=True)
+            run(
+                ["bam_stat.py", "-i", bam_path],
+                output=bam_stats_path / f"{name}_{i}_bam_stat.txt",
+            )
+
+            infer_path = rseqc_path / "Inferred Experiments"
+            infer_path.mkdir(exist_ok=True)
+            run(
+                [
+                    "infer_experiment.py",
+                    "-r",
+                    bed_path,
+                    "-i",
+                    bam_path,
+                ],
+                output=infer_path / "{name}_{i}_infer_experiment.txt",
+            )
+
+            junction_path = rseqc_path / "Junction Saturation"
+            junction_path.mkdir(exist_ok=True)
+            run(
+                [
+                    "junction_saturation.py",
+                    "-r",
+                    bed_path,
+                    "-i",
+                    bam_path,
+                    "-o",
+                    junction_path / f"{name}_{i}",
+                ]
+            )
+
+
+@small_task
 def run_multiqc(
     run_name: str,
     reports: List[LatchFile],
-    bams: List[List[LatchFile]],
+    sample_bams: List[List[LatchFile]],
     sample_names: List[str],  # TODO incorporate this somewhere
     log_files: List[LatchFile],
     quantified_bams: List[LatchFile],
@@ -505,7 +577,7 @@ def run_multiqc(
     for s in quantified_bams:
         paths.append(s.local_path)
 
-    for l in bams:
+    for l in sample_bams:
         for s in l:
             paths.append(s.local_path)
 
@@ -531,7 +603,7 @@ def rnaseq(
     output_location_fork: str,
     run_name: str,
     latch_genome: LatchGenome,
-    bams: List[List[LatchFile]],
+    sample_bams: List[List[LatchFile]],
     custom_gtf: Optional[LatchFile] = None,
     custom_ref_genome: Optional[LatchFile] = None,
     custom_ref_trans: Optional[LatchFile] = None,
@@ -787,7 +859,7 @@ def rnaseq(
         run_name=run_name,
         custom_output_dir=custom_output_dir,
     )
-    bams, sample_names, log_files = align_star(
+    sample_bams, sample_names, log_files = align_star(
         samples=trimmed_samples,
         run_name=run_name,
         ref=latch_genome,
@@ -797,7 +869,7 @@ def rnaseq(
         custom_output_dir=custom_output_dir,
     )
     quantified_bams = quantify_salmon(
-        bams=bams,
+        bams=sample_bams,
         sample_names=sample_names,
         ref=latch_genome,
         run_name=run_name,
@@ -809,7 +881,7 @@ def rnaseq(
     multiqc_report = run_multiqc(
         run_name=run_name,
         reports=reports,
-        bams=bams,
+        sample_bams=sample_bams,
         sample_names=sample_names,
         log_files=log_files,
         quantified_bams=quantified_bams,
