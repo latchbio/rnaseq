@@ -5,7 +5,10 @@ from tqdm import tqdm
 import gzip
 
 from wf import PairedEndReads, SingleEndReads
-from wf.validation.errors import LatchValidationError
+
+
+class LatchValidationError(Exception):
+    pass
 
 
 @dataclass

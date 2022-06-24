@@ -124,6 +124,7 @@ class FastQCValidationConfig:
     check_overall_gc_content: bool
     check_dedup_pct: bool
     check_adapter_content: bool
+    check_sequence_length_dist: bool
 
     quality_threshold: int = 0
     dedup_pct_threshold: float = 80.0
@@ -165,13 +166,18 @@ def check_adapter_content(
     report: FastQCReport, adapter_pct_threshold: float = 5.0
 ) -> List[str]:
     res = []
+    zero_resolution = 1e-10
     non_zero_adapters = report.adapter_content
     cols = list(non_zero_adapters.columns)
     cols.remove("Position")
-    cols_with_nonzero_sum = [x for x in cols if non_zero_adapters[x].sum() >= 1e-10]
+    cols_with_nonzero_sum = [
+        x for x in cols if non_zero_adapters[x].sum() >= zero_resolution
+    ]
 
     non_zero_adapters = non_zero_adapters.loc[
-        ~non_zero_adapters.apply(lambda row: (row[cols] <= 1e-10).all(), axis=1)
+        ~non_zero_adapters.apply(
+            lambda row: (row[cols] <= zero_resolution).all(), axis=1
+        )
     ]
 
     if non_zero_adapters.shape[0] > 0:
@@ -194,6 +200,24 @@ def check_adapter_content(
         res.append(
             gt_pct_adapter[["Position", *cols_with_nonzero_sum]].to_string(index=False)
         )
+        res.append("\n")
+    return res
+
+
+def check_sequence_length_dist(report: FastQCReport) -> List[str]:
+    res = []
+
+    if report.seq_length_dist.shape[0] > 1:
+        res.append("> Warning: Sequences of multiple lengths detected \n")
+        res.append(report.seq_length_dist.to_string(index=False))
+        res.append("\n")
+
+    zero_length_seq = report.seq_length_dist[report.seq_length_dist["Length"] == 0]
+    if zero_length_seq.shape[0] > 0:
+        res.append(
+            f"> Warning: Found {zero_length_seq['Count'].iloc[0]} zero-length sequences."
+        )
+
     return res
 
 
@@ -221,6 +245,11 @@ def analyze_fastqc_report(
             validation_config.check_dedup_pct,
             check_dedup_pct,
             validation_config.dedup_pct_threshold,
+        ),
+        (
+            validation_config.check_sequence_length_dist,
+            check_sequence_length_dist,
+            None,
         ),
     ]:
         if attribute:

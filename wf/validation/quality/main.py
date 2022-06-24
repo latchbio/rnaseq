@@ -28,7 +28,7 @@ def _fastqc_helper(
 
     log_results = "\n".join(
         [
-            f"=====> Starting FastQC Validation Report for file {report.filename}\n\n",
+            f"=====> FastQC Validation Report for file {report.filename}\n\n",
             "\n".join(results),
             f"\n\n=====> Completed FastQC Validation Report for file {report.filename}",
         ]
@@ -47,6 +47,8 @@ def qc_raw_replicate(
             - Duplicated Reads
             - Sequence Quality
             - Adapter Content
+            - Sequence Length != 0
+            - num(Sequence Length) == 1
     """
 
     raw_validation_config = FastQCValidationConfig(
@@ -54,6 +56,7 @@ def qc_raw_replicate(
         check_dedup_pct=True,
         check_poor_quality=True,
         check_overall_gc_content=True,
+        check_sequence_length_dist=True,
     )
 
     logs = []
