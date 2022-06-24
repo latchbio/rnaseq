@@ -4,11 +4,11 @@ from typing import Iterator, Union, List
 from tqdm import tqdm
 import gzip
 
-from wf import PairedEndReads, Sample, SingleEndReads
-from wf.errors import LatchValidationError
+from wf import PairedEndReads, SingleEndReads
+from wf.validation.errors import LatchValidationError
 
 
-@dataclass()
+@dataclass
 class FastQRecord:
     identifier: str
     sequence: str
@@ -28,25 +28,20 @@ class FastQRecord:
             ]
         ):
             record = "\n".join(
-                [self.identifier, self.sequence, self.separator, self.quality_scores]
+                [self.identifier, self.sequence, self.separator, self.quality_score_seq]
             )
             raise LatchValidationError(
                 f"Badly formatted fastq record found:\n\n{record}"
             )
 
-    @property
-    def quality_score(self):
-        # assumes phred-33
-        return [ord(x) - 33 for x in self.quality_score_seq]
 
-
-def fastq_iterator(fastq_filepath: str) -> Iterator[FastQRecord]:
+def fastq_iterator(fastq_filepath: str, n_records: int = 5) -> Iterator[FastQRecord]:
     is_gzipped = fastq_filepath.endswith(".gz")
     opener = gzip.open if is_gzipped else open
 
     with opener(fastq_filepath, "r") as f:
-        file_iterator = (l.rstrip() for l in f)
-        for record in zip_longest(*[file_iterator] * 4):
+        head = (next(f).rstrip() for _ in range(n_records * 4))
+        for record in zip_longest(*[head] * 4):
             if is_gzipped:
                 yield FastQRecord(*[x.decode("ascii") for x in record])
             else:
@@ -67,7 +62,7 @@ def validate_fastq_reads(
             try:
                 it = fastq_iterator(replicate.r1.local_path)
                 for _ in it:
-                    # iterate over the records to auto-validate
+                    # iterate over the records to validate
                     continue
 
             except gzip.BadGzipFile as e:

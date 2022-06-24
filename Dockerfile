@@ -1,6 +1,6 @@
 FROM 812206152185.dkr.ecr.us-west-2.amazonaws.com/latch-base:9a7d-main
 
-RUN apt-get install -y curl vim
+RUN apt-get install -y curl vim unzip default-jre
 RUN python3 -m pip install cutadapt
 RUN curl -fsSL https://github.com/FelixKrueger/TrimGalore/archive/0.6.6.tar.gz -o trim_galore.tar.gz &&\
     tar xvzf trim_galore.tar.gz &&\
@@ -17,6 +17,12 @@ RUN curl -L https://github.com/COMBINE-lab/salmon/releases/download/v1.8.0/salmo
   mv salmon-1.8.0_linux_x86_64/bin/salmon /bin &&\
   mv salmon-1.8.0_linux_x86_64/lib/* /lib/x86_64-linux-gnu/ &&\
   rm -rf salmon-1.8.0 salmon-1.8.0_linux_x86_64.tar.gz
+
+RUN curl -L https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.11.9.zip -o fastqc_v0.11.9.zip &&\
+    unzip fastqc_v0.11.9.zip &&\
+    mv FastQC/ /root &&\
+    ln -s /root/FastQC/fastqc /usr/local/bin/fastqc &&\
+    rm -rf fastqc_v0.11.9.zip
 
 RUN python3 -m pip install --upgrade latch
 COPY wf /root/wf

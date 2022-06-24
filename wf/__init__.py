@@ -12,11 +12,18 @@ from urllib.parse import urlparse
 from dataclasses_json import dataclass_json
 from flytekit import LaunchPlan, task
 from flytekitplugins.pod import Pod
-from kubernetes.client.models import (V1Container, V1PodSpec,
-                                      V1ResourceRequirements, V1Toleration)
+from kubernetes.client.models import (
+    V1Container,
+    V1PodSpec,
+    V1ResourceRequirements,
+    V1Toleration,
+)
 from latch import small_task, workflow
 from latch.types import LatchDir, LatchFile
 from latch.types.glob import file_glob
+
+from .validation.input.fastq import validate_fastq_reads
+from .validation.quality.main import qc_raw_replicate
 
 
 def run(cmd: List[str]):
@@ -178,6 +185,31 @@ def parse_inputs(
     ...
 
 
+@small_task
+def validation(samples: List[Sample], run_name: str) -> List[LatchFile]:
+    """Run fastq input + qc validation for all samples."""
+
+    reports = []
+
+    for sample in samples:
+        validate_fastq_reads(sample.replicates)
+        sample_output_dir = f"fastqc_outputs/{sample.name}"
+        remote_sample_output_dir = f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/FastQC Reports/{sample.name}"
+        os.makedirs(sample_output_dir, exist_ok=True)
+
+        for replicate in sample.replicates:
+            logs, report_paths = qc_raw_replicate(replicate, sample_output_dir)
+
+            # TODO: Do something with the logs
+
+            reports += [
+                LatchFile(p, Path(remote_sample_output_dir) / Path(p).name)
+                for p in report_paths
+            ]
+
+    return reports
+
+
 @large_spot_task
 def trimgalore(
     samples: List[Sample],
@@ -249,9 +281,7 @@ def trimgalore(
 
 @large_spot_task
 def align_star(
-    samples: List[Sample],
-    ref: LatchGenome,
-    run_name: str,
+    samples: List[Sample], ref: LatchGenome, run_name: str,
 ) -> (List[List[LatchFile]], List[str]):
 
     os.mkdir("STAR_index")
@@ -690,6 +720,8 @@ def rnaseq(
             display_name: Custom Output Location
     """
 
+    validation_reports = validation(samples=samples, run_name=run_name)
+
     trimmed_samples, reports = trimgalore(
         samples=samples,
         clip_r1=None,
@@ -717,12 +749,8 @@ if __name__ == "wf":
                     strandedness=Strandedness.auto,
                     replicates=[
                         PairedEndReads(
-                            r1=LatchFile(
-                                "s3://latch-public/welcome/rnaseq/r1.fastq",
-                            ),
-                            r2=LatchFile(
-                                "s3://latch-public/welcome/rnaseq/r2.fastq",
-                            ),
+                            r1=LatchFile("s3://latch-public/welcome/rnaseq/r1.fastq",),
+                            r2=LatchFile("s3://latch-public/welcome/rnaseq/r2.fastq",),
                         )
                     ],
                 )
