@@ -1,12 +1,12 @@
 """latch/rnaseq"""
 
 import gzip
-from itertools import zip_longest
 import os
 import subprocess
 import types
 from dataclasses import dataclass
 from enum import Enum
+from itertools import zip_longest
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 from urllib.parse import urlparse
@@ -25,12 +25,12 @@ from latch import small_task, workflow
 from latch.types import LatchDir, LatchFile
 from latch.types.glob import file_glob
 
-from wf.validation.quality.fastqc import FastQCValidationConfig, fastqc_helper
 from wf.validation.input.fastq import (
     LatchValidationError,
     fastq_iterator,
     verify_paired_records,
 )
+from wf.validation.quality.fastqc import FastQCValidationConfig, fastqc_helper
 
 
 def run(cmd: List[str]):

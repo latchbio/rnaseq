@@ -1,7 +1,7 @@
+import gzip
 from dataclasses import dataclass
 from itertools import zip_longest
 from typing import Iterator
-import gzip
 
 from dataclasses_json import dataclass_json
 
