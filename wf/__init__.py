@@ -320,10 +320,10 @@ def sa_salmon(
                     "--num-threads",
                     "96",
                     str(genome),
-                    "rsem/genome",
+                    "genome",
                 ]
             )
-            return Path("/root/rsem/genome.transcripts.fa")
+            return Path("/root/genome.transcripts.fa")
 
         def _build_index(gentrome: Path) -> Path:
             run(
@@ -332,10 +332,14 @@ def sa_salmon(
                     "index",
                     "-t",
                     str(gentrome),
-                    "-i" "salmon_index" "--decoys",
+                    "-i",
+                    "salmon_index",
+                    "--decoys",
                     "decoys.txt",  # Comes from gentrome.sh
                     "-k",
                     "31",
+                    "--threads",
+                    "96",
                 ]
             )
             return Path("/root/salmon_index")
@@ -375,6 +379,7 @@ def sa_salmon(
             if read[-3:] == ".gz":
                 run(["gunzip", read])
                 reads[i] = read[:-3]
+
         run(
             [
                 "salmon",
@@ -405,7 +410,7 @@ def sa_salmon(
 
         sf_files.append(
             LatchFile(
-                f"/root/salmon_quant/{sample.name}_quant.sf",
+                f"/root/salmon_quant/quant.sf",
                 output_literal,
             )
         )
