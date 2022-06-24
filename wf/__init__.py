@@ -1,12 +1,14 @@
 """latch/rnaseq"""
 
+import gzip
+from itertools import zip_longest
 import os
 import subprocess
 import types
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import lgenome
@@ -23,8 +25,12 @@ from latch import small_task, workflow
 from latch.types import LatchDir, LatchFile
 from latch.types.glob import file_glob
 
-from .validation.input.fastq import validate_fastq_reads
-from .validation.quality.main import qc_raw_replicate
+from wf.validation.quality.fastqc import FastQCValidationConfig, fastqc_helper
+from wf.validation.input.fastq import (
+    LatchValidationError,
+    fastq_iterator,
+    verify_paired_records,
+)
 
 
 def run(cmd: List[str]):
@@ -192,6 +198,96 @@ def parse_inputs(
     ...
 
 
+def validate_fastq_reads(
+    replicates: List[Union[PairedEndReads, SingleEndReads]]
+) -> bool:
+    for replicate in replicates:
+        try:
+            if type(replicate) == SingleEndReads:
+                # verify if file exists, is readable and formatted correctly
+                it = fastq_iterator(replicate.r1.local_path)
+                for _ in it:
+                    # iterate over the records to validate
+                    continue
+
+            elif type(replicate) == PairedEndReads:
+                # verify if the paired end reads are in correct order + match
+                r1_records = fastq_iterator(replicate.r1.local_path)
+                r2_records = fastq_iterator(replicate.r2.local_path)
+
+                for (record_1, record_2) in zip_longest(r1_records, r2_records):
+                    if (record_1 is None and record_2 is not None) or (
+                        record_2 is None and record_1 is not None
+                    ):
+                        longer_file = (
+                            replicate.r1 if record_1 is not None else replicate.r2
+                        )
+                        raise LatchValidationError(
+                            f"Error validating paired end reads - {longer_file.local_path} has more reads than the other."
+                        )
+
+                    if not verify_paired_records(record_1, record_2):
+                        raise LatchValidationError(
+                            f"Error validating paired end reads - order mismatch, trying to pair {record_1.identifier} to {record_2.identifier}."
+                        )
+
+        except gzip.BadGzipFile as e:
+            raise LatchValidationError(
+                f"Error opening gzipped file: {e.filename}. Are you sure the gzipped file isn't corrupted?"
+            )
+
+        except IOError as e:
+            raise LatchValidationError(
+                f"Error opening FastQ files: {replicate.r1.local_path}. \nAre you sure if the file exists and the current script has permissions to access it?"
+            )
+
+    return True
+
+
+def qc_raw_replicate(
+    replicate: Union[PairedEndReads, SingleEndReads], output_dir: str
+) -> Tuple[List[str], List[Path]]:
+    """
+    Raw reads are evaluated on:
+        - FastQC:
+            - GC Content
+            - Duplicated Reads
+            - Sequence Quality
+            - Adapter Content
+            - Sequence Length != 0
+            - num(Sequence Length) == 1
+    """
+
+    raw_validation_config = FastQCValidationConfig(
+        check_adapter_content=True,
+        check_dedup_pct=True,
+        check_poor_quality=True,
+        check_overall_gc_content=True,
+        check_sequence_length_dist=True,
+    )
+
+    logs = []
+    report_paths = []
+
+    if type(replicate) == PairedEndReads:
+        # Each fastq file in a PairedEnd read is analyzed separately
+        for path in [replicate.r1.local_path, replicate.r2.local_path]:
+            log_results, report_path = fastqc_helper(
+                path, raw_validation_config, output_dir
+            )
+            logs.append(log_results)
+            report_paths.append(report_path)
+
+    else:
+        log_results, report_path = fastqc_helper(
+            replicate.r1.local_path, raw_validation_config, output_dir
+        )
+        logs.append(log_results)
+        report_paths.append(report_path)
+
+    return logs, report_paths
+
+
 @small_task
 def validation(samples: List[Sample], run_name: str) -> List[LatchFile]:
     """Run fastq input + qc validation for all samples."""
@@ -200,19 +296,24 @@ def validation(samples: List[Sample], run_name: str) -> List[LatchFile]:
 
     for sample in samples:
         validate_fastq_reads(sample.replicates)
-        sample_output_dir = f"fastqc_outputs/{sample.name}"
+        sample_output_dir = Path(f"fastqc_outputs/{sample.name}").resolve()
+        sample_output_dir.mkdir(parents=True, exist_ok=True)
+
         remote_sample_output_dir = f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/FastQC Reports/{sample.name}"
-        os.makedirs(sample_output_dir, exist_ok=True)
 
         for replicate in sample.replicates:
             logs, report_paths = qc_raw_replicate(replicate, sample_output_dir)
 
             # TODO: Do something with the logs
+            print("\n".join(logs))
 
-            reports += [
-                LatchFile(p, Path(remote_sample_output_dir) / Path(p).name)
-                for p in report_paths
-            ]
+            for report_path in report_paths:
+                reports.append(
+                    LatchFile(
+                        str(report_path),
+                        f"{remote_sample_output_dir}/{report_path.name}",
+                    )
+                )
 
     return reports
 
@@ -241,7 +342,13 @@ def trimgalore(
         if type(reads) is SingleEndReads:
             flags = _find_locals_in_set(single_end_set)
             run(
-                ["trim_galore", "--cores", str(8), *flags, str(reads.r1.local_path),]
+                [
+                    "trim_galore",
+                    "--cores",
+                    str(8),
+                    *flags,
+                    str(reads.r1.local_path),
+                ]
             )
         else:
             paired_end_set = single_end_set + ("clip_r2", "three_prime_clip_r2")
@@ -314,7 +421,11 @@ def sa_salmon(
     if custom_salmon_idx is not None:
         # TODO: validate provided index...
         run(
-            ["tar", "-xzvf", custom_salmon_idx.local_path,]
+            [
+                "tar",
+                "-xzvf",
+                custom_salmon_idx.local_path,
+            ]
         )
         if Path("salmon_index").is_dir() is False:
             raise MalformedSalmonIndex(
@@ -325,7 +436,11 @@ def sa_salmon(
 
         def _build_gentrome(genome: Path, transcript: Path) -> Path:
             run(
-                ["/root/gentrome.sh", str(genome), str(transcript),]
+                [
+                    "/root/gentrome.sh",
+                    str(genome),
+                    str(transcript),
+                ]
             )
             return Path("/root/gentrome.fa")
 
@@ -422,7 +537,10 @@ def sa_salmon(
             output_literal = remote_path + path_tail
 
         sf_files.append(
-            LatchFile(f"/root/salmon_quant/{sample.name}_quant.sf", output_literal,)
+            LatchFile(
+                f"/root/salmon_quant/{sample.name}_quant.sf",
+                output_literal,
+            )
         )
 
     return sf_files
@@ -723,8 +841,12 @@ if __name__ == "wf":
                     strandedness=Strandedness.auto,
                     replicates=[
                         PairedEndReads(
-                            r1=LatchFile("s3://latch-public/welcome/rnaseq/r1.fastq",),
-                            r2=LatchFile("s3://latch-public/welcome/rnaseq/r2.fastq",),
+                            r1=LatchFile(
+                                "s3://latch-public/welcome/rnaseq/r1.fastq",
+                            ),
+                            r2=LatchFile(
+                                "s3://latch-public/welcome/rnaseq/r2.fastq",
+                            ),
                         )
                     ],
                 )

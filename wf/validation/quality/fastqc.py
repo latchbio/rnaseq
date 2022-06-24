@@ -6,7 +6,7 @@ from io import StringIO
 import subprocess
 import os
 import shutil
-from typing import List
+from typing import List, Tuple
 
 import pandas as pd
 
@@ -143,7 +143,7 @@ def check_dedup_pct(report: FastQCReport, pct_threshold: float = 80) -> List[str
     res = []
     if report.total_deduplicated_pct <= pct_threshold:
         res.append(
-            f"> Warning: after deduplicating, only {report.total_deduplicated_pct}% of sequences will remain."
+            f"> Warning: after deduplicating, only {report.total_deduplicated_pct:.2f}% of sequences will remain."
         )
 
         res.append(
@@ -257,3 +257,28 @@ def analyze_fastqc_report(
 
     return logging_data
 
+
+def fastqc_helper(
+    path: str, validation_config: FastQCValidationConfig, output_dir: str
+) -> Tuple[str, Path]:
+    """
+    Using this paper as a baseline: https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-0881-8
+    """
+
+    filename = Path(path).name.split(".")[0]
+    fastqc_output_dir = (Path(output_dir) / filename).resolve()
+    fastqc_output_dir.mkdir(parents=True, exist_ok=True)
+
+    report = run_fastqc(path, fastqc_output_dir)
+
+    results = analyze_fastqc_report(report, validation_config)
+
+    log_results = "\n".join(
+        [
+            f"=====> FastQC Validation Report for file {report.filename}\n\n",
+            "\n".join(results),
+            f"\n\n=====> Completed FastQC Validation Report for file {report.filename}",
+        ]
+    )
+
+    return (log_results, Path(fastqc_output_dir) / f"{filename}_fastqc.html")
