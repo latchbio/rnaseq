@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 from urllib.parse import urlparse
 
+import lgenome
 from dataclasses_json import dataclass_json
 from flytekit import LaunchPlan, task
 from flytekitplugins.pod import Pod
@@ -171,6 +172,12 @@ class CustomGenome:
     STAR_index: Optional[LatchFile]
 
 
+@dataclass_json
+@dataclass
+class GenomeData:
+    gtf: LatchFile
+
+
 @small_task
 def parse_inputs(
     genome: Union[LatchGenome, CustomGenome],
@@ -218,6 +225,7 @@ def trimgalore(
     clip_r2: Optional[int] = None,
     three_prime_clip_r1: Optional[int] = None,
     three_prime_clip_r2: Optional[int] = None,
+    custom_output_dir: Union[None, LatchDir] = None,
 ) -> (List[Sample], List[LatchFile]):
 
     sample = samples[0]  # TODO
@@ -233,13 +241,7 @@ def trimgalore(
         if type(reads) is SingleEndReads:
             flags = _find_locals_in_set(single_end_set)
             run(
-                [
-                    "trim_galore",
-                    "--cores",
-                    str(96),  # TODO
-                    *flags,
-                    str(reads.r1.local_path),
-                ]
+                ["trim_galore", "--cores", str(8), *flags, str(reads.r1.local_path),]
             )
         else:
             paired_end_set = single_end_set + ("clip_r2", "three_prime_clip_r2")
@@ -248,7 +250,7 @@ def trimgalore(
                 [
                     "trim_galore",
                     "--cores",
-                    str(96),  # TODO
+                    str(8),
                     "--paired",
                     *flags,
                     str(reads.r1.local_path),
@@ -257,16 +259,20 @@ def trimgalore(
             )
 
         # Return trimming reports as a side effect.
-        trimmed_reports = file_glob(
-            "*trimming_report.txt",
-            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimming Reports"
-            f" (TrimeGalore)/{sample.name}/",
-        )
-        trimmed = file_glob(
-            "*fq*",
-            f"latch:///RNA-Seq Outputs/{run_name}/Quality Control Data/Trimmed Reads"
-            f" (TrimeGalore)/{sample.name}/",
-        )
+        report_tail = f"{run_name}/Quality Control Data/Trimming Reports (TrimeGalore)/{sample.name}/"
+        read_tail = f"{run_name}/Quality Control Data/Trimming Reads (TrimeGalore)/{sample.name}/"
+        if custom_output_dir is None:
+            report_literal = "latch:///RNA-Seq Outputs/" + report_tail
+            read_literal = "latch:///RNA-Seq Outputs/" + read_tail
+        else:
+            remote_path = custom_output_dir.remote_path
+            if remote_path[-1] != "/":
+                remote_path += "/"
+            report_literal = remote_path + report_tail
+            read_literal = remote_path + read_tail
+
+        trimmed_reports = file_glob("*trimming_report.txt", report_literal)
+        trimmed = file_glob("*fq*", read_literal)
 
         if type(reads) is SingleEndReads:
             trimmed_replicates.append(SingleEndReads(r1=trimmed[0]))
@@ -279,139 +285,147 @@ def trimgalore(
     return [trimmed_sample], trimmed_reports
 
 
+class InsufficientCustomGenomeResources(Exception):
+    pass
+
+
+class MalformedSalmonIndex(Exception):
+    pass
+
+
 @large_spot_task
-def align_star(
-    samples: List[Sample], ref: LatchGenome, run_name: str,
-) -> (List[List[LatchFile]], List[str]):
+def sa_salmon(
+    samples: List[Sample],
+    run_name: str,
+    ref: LatchGenome,
+    custom_ref_genome: Optional[LatchFile] = None,
+    custom_gtf: Optional[LatchFile] = None,
+    custom_ref_trans: Optional[LatchFile] = None,
+    custom_salmon_idx: Optional[LatchFile] = None,
+    custom_output_dir: Optional[LatchDir] = None,
+) -> List[LatchFile]:
 
-    os.mkdir("STAR_index")
+    gm = lgenome.GenomeManager(ref.name)
 
-    run(
-        [
-            "aws",
-            "s3",
-            "sync",
-            "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/STAR_index",
-            "STAR_index",
-        ]
-    )
+    # lgenome
+    # decoy = ref genome + transcript
+    # genome + gtf = transcript
 
-    run(
-        [
-            "aws",
-            "s3",
-            "cp",
-            "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/GCF_000001405.40_GRCh38.p14_genomic.stripped.gtf",
-            ".",
-        ]
-    )
+    if custom_salmon_idx is not None:
+        # TODO: validate provided index...
+        run(
+            ["tar", "-xzvf", custom_salmon_idx.local_path,]
+        )
+        if Path("salmon_index").is_dir() is False:
+            raise MalformedSalmonIndex(
+                "The custom Salmon index provided must be a directory named 'salmon_index'"
+            )
+
+    elif custom_ref_genome is not None:
+
+        def _build_gentrome(genome: Path, transcript: Path) -> Path:
+            run(
+                ["/root/gentrome.sh", str(genome), str(transcript),]
+            )
+            return Path("/root/gentrome.fa")
+
+        def _build_transcript(genome: Path, gtf: Path) -> Path:
+            run(
+                [
+                    "/root/RSEM-1.3.3/rsem-prepare-reference",
+                    "--gtf",
+                    str(gtf),
+                    "--num-threads",
+                    "96",
+                    str(genome),
+                    "rsem/genome",
+                ]
+            )
+            return Path("/root/rsem/genome.transcripts.fa")
+
+        def _build_index(gentrome: Path) -> Path:
+            run(
+                [
+                    "salmon",
+                    "index",
+                    "-t",
+                    str(gentrome),
+                    "-i" "salmon_index" "--decoys",
+                    "decoys.txt",  # Comes from gentrome.sh
+                    "-k",
+                    "31",
+                ]
+            )
+            return Path("/root/salmon_index")
+
+        # Several ways to recover from missing files:
+        #   1. Build a gentrome from provided genome + transcriptome
+        #   2. First build a transcriptome from a genome + gtf, then 1.
+        if custom_ref_trans is not None:
+            gentrome = _build_gentrome(
+                custom_ref_genome.local_path, custom_ref_trans.local_path
+            )
+            local_index = _build_index(gentrome)
+        elif custom_gtf is not None:
+            local_ref_trans = _build_transcript(
+                custom_ref_genome.local_path, custom_gtf.local_path
+            )
+            gentrome = _build_gentrome(custom_ref_genome.local_path, local_ref_trans)
+            local_index = _build_index(gentrome)
+        else:
+            raise InsufficientCustomGenomeResources(
+                "Both a custom reference genome + GTF file need to be provided."
+            )
+    else:
+        local_index = gm.download_salmon_index()
+
+    sf_files = []
 
     sample = samples[0]  # TODO
-
-    sample_bams = []
-    sample_names = []
     for reads in sample.replicates:
 
         if type(reads) is SingleEndReads:
-            reads = [str(reads.r1.local_path)]
+            reads = ["-r", str(reads.r1.local_path)]
         else:
-            reads = [str(reads.r1.local_path), str(reads.r2.local_path)]
+            reads = ["-1", str(reads.r1.local_path), "-2", str(reads.r2.local_path)]
 
         for i, read in enumerate(reads):
             if read[-3:] == ".gz":
                 run(["gunzip", read])
                 reads[i] = read[:-3]
-
-        run(
-            [
-                "STAR",
-                "--genomeDir",
-                "STAR_index",
-                "--readFilesIn",
-                *reads,
-                "--runThreadN",
-                str(96),  # TODO
-                "--outFileNamePrefix",
-                sample.name,
-                "--sjdbGTFfile",
-                "GCF_000001405.40_GRCh38.p14_genomic.stripped.gtf",
-                "--outSAMtype",
-                "BAM",
-                "Unsorted",
-                "SortedByCoordinate",
-            ]
-        )
-
-        sample_names.append(sample.name)
-        sample_bams.append(
-            [
-                file_glob(
-                    "*out.bam",
-                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment"
-                    f" (STAR)/{sample.name}/",
-                )[0],
-                file_glob(
-                    "*sortedByCoord.out.bam",
-                    f"latch:///RNA-Seq Outputs/{run_name}/Alignment"
-                    f" (STAR)/{sample.name}/",
-                )[0],
-            ]
-        )
-    return sample_bams, sample_names
-
-
-@large_spot_task
-def quantify_salmon(
-    bams: List[List[LatchFile]],
-    sample_names: List[str],
-    ref: LatchGenome,
-    run_name: str,
-) -> List[LatchFile]:
-
-    run(
-        [
-            "aws",
-            "s3",
-            "cp",
-            "s3://latch-genomes/Homo_sapiens/RefSeq/GRCh38.p14/GCF_000001405.40_GRCh38.p14_genomic.transcripts.decoy.fna",
-            ".",
-        ]
-    )
-
-    quantified_bams = []
-    for i, bam_set in enumerate(bams):
-        bam = bam_set[0]
         run(
             [
                 "salmon",
                 "quant",
-                "-t",
-                str("GCF_000001405.40_GRCh38.p14_genomic.transcripts.decoy.fna"),
-                "-a",
-                str(bam.local_path),
+                "-i",
+                str(local_index),
+                "-l",
+                "A",
+                *reads,
                 "--threads",
-                str(96),  # TODO
-                "--libType=A",
+                str(96),
+                "--validateMappings",
                 "-o",
-                "salmon_quant",  # TODO:
+                "salmon_quant",
             ]
         )
-        quantified_bams.append(
-            LatchFile(
-                "/root/salmon_quant/quant.sf",
-                f"latch:///RNA-Seq Outputs/{run_name}/Quantification"
-                f" (salmon)/{sample_names[i]}/{sample_names[i]}_quant.sf",
-            )
+
+        path_tail = (
+            f"{run_name}/Quantification (salmon)/{sample.name}/{sample.name}_quant.sf"
         )
-        quantified_bams.append(
-            LatchFile(
-                "/root/salmon_quant/quant.sf",
-                f"latch:///RNA-Seq Outputs/{run_name}/Quantification"
-                f" (salmon)/{sample_names[i]}/{sample_names[i]}_quant.tsv",
-            )
+        if custom_output_dir is None:
+            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+        else:
+            remote_path = custom_output_dir.remote_path
+            if remote_path[-1] != "/":
+                remote_path += "/"
+            output_literal = remote_path + path_tail
+
+        sf_files.append(
+            LatchFile(f"/root/salmon_quant/{sample.name}_quant.sf", output_literal,)
         )
 
-    return quantified_bams
+    return sf_files
 
 
 class AlignmentTools(Enum):
@@ -429,9 +443,9 @@ def rnaseq(
     run_name: str,
     latch_genome: LatchGenome,
     bams: List[List[LatchFile]],
-    gtf: Optional[LatchFile] = None,
-    ref_genome: Optional[LatchFile] = None,
-    ref_transcript: Optional[LatchFile] = None,
+    custom_gtf: Optional[LatchFile] = None,
+    custom_ref_genome: Optional[LatchFile] = None,
+    custom_ref_trans: Optional[LatchFile] = None,
     star_index: Optional[LatchFile] = None,
     salmon_index: Optional[LatchFile] = None,
     save_indices: bool = False,
@@ -454,7 +468,7 @@ def rnaseq(
 
     ## Alignment & Quantification Methods
 
-    There are two methods availible in this workflow for doing alignment and quantification:
+    There are two methods availible for doing alignment and quantification:
 
     ### Traditional Alignment
 
@@ -495,63 +509,14 @@ def rnaseq(
         - section: Alignment & Quantification
           flow:
             - text: >-
-                Two methods are available for the alignment and quantification
-                of your reads.  "Traditional alignment" is the more accurate
+                We use "Traditional alignment" as an accurate
                 but expensive (in terms of time and computing resources)
                 option. This method in this workflow employs
                 [STAR](https://github.com/alexdobin/STAR) for alignment and
                 [Salmon](https://salmon.readthedocs.io/en/latest/salmon.html)
                 for transcript quantification.
-
-                "Selective alignment" is a faster mapping algorithm that is
-                slightly less accurate.  This method uses Salmon to lightly map
-                reads and quantify transcripts.  Often the differences between
-                accuracy is minimal between these two methods - read more
-                [here](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02151-8).
             - fork: alignment_quantification_tools
               flows:
-                selective:
-                    display_name: Selective Alignment
-                    flow:
-                    - fork: sa_ref_genome_fork
-                      flows:
-                        database:
-                            display_name: Select from Latch Genome Database
-                            _tmp_unwrap_optionals:
-                                - latch_genome
-                            flow:
-                                - text: >-
-                                    We have curated a set of reference
-                                    genome data for ease and
-                                    reproducibility. More information about
-                                    these managed files can be found
-                                    [here](https://github.com/latchbio/latch-genomes).
-                                - params:
-                                    - latch_genome
-                        custom:
-                            display_name: Provide Custom Genome
-                            _tmp_unwrap_optionals:
-                                - gtf
-                                - ref_genome
-                            flow:
-                                - text: >-
-                                    When providing custom reference
-                                    data to the selective alignment method,
-                                    only a reference transcriptome is
-                                    needed. This can be provided directly,
-                                    generated from a genome + annotation
-                                    file or provided pre-built as an index.
-                                - params:
-                                    - gtf
-                                    - ref_genome
-                                - spoiler: Optional Params
-                                  flow:
-                                    - text: >-
-                                        These files will be generated from the
-                                        GTF/Genome files if not provided.
-                                    - params:
-                                        - ref_transcript
-                                        - salmon_index
                 traditional:
                     display_name: Traditional Alignment
                     flow:
@@ -571,20 +536,20 @@ def rnaseq(
                             custom:
                                 display_name: Provide Custom Genome
                                 _tmp_unwrap_optionals:
-                                    - gtf
-                                    - ref_genome
+                                    - custom_gtf
+                                    - custom_ref_genome
                                 flow:
                                     - params:
-                                        - gtf
-                                        - ref_genome
+                                        - custom_ref_genome
+                                        - custom_gtf
                                     - spoiler: Optional Params
                                       flow:
                                         - text: >-
                                             These files will be generated from the
                                             GTF/Genome files if not provided.
                                         - params:
-                                            - ref_transcript
                                             - star_index
+                                            - custom_ref_trans
         - section: Output Settings
           flow:
           - params:
@@ -645,7 +610,7 @@ def rnaseq(
           __metadata__:
             display_name: Reference Genome Source
 
-        ref_genome:
+        custom_ref_genome:
           The reference genome you want to align you samples to.
 
           __metadata__:
@@ -653,12 +618,14 @@ def rnaseq(
             appearance:
                 detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
 
-        gtf:
+        custom_gtf:
           The gene annonation file that corresponds to the reference genome
           provided.
 
           __metadata__:
             display_name: Annotation File
+            appearance:
+                detail: (.gtf)
 
         bams:
           foobar
@@ -666,14 +633,14 @@ def rnaseq(
           __metadata__:
             display_name: bams
 
-        ref_transcript:
+        custom_ref_trans:
           If not provided the workflow will generate from the Annotation File
           and Reference Genome File.
 
           __metadata__:
             display_name: Reference Transcript File (optional)
-                appearance:
-                    detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
+            appearance:
+                detail: (.fasta, .fasta.gz, .fa, .fa.gz, .fna, .fna.gz)
 
         star_index:
           You are able to provide a zipped prebuilt STAR alignment index for
@@ -692,6 +659,8 @@ def rnaseq(
 
           __metadata__:
             display_name: salmon Index
+            appearance:
+                detail: (.tar.gz is only accepted extension)
 
         save_indices:
             If you provided a custom genome you can output the alignment
@@ -729,12 +698,17 @@ def rnaseq(
         three_prime_clip_r1=None,
         three_prime_clip_r2=None,
         run_name=run_name,
+        custom_output_dir=custom_output_dir,
     )
-    bams, sample_names = align_star(
-        samples=trimmed_samples, ref=latch_genome, run_name=run_name
-    )
-    return quantify_salmon(
-        bams=bams, sample_names=sample_names, ref=latch_genome, run_name=run_name
+    return sa_salmon(
+        samples=trimmed_samples,
+        ref=latch_genome,
+        run_name=run_name,
+        custom_gtf=custom_gtf,
+        custom_ref_genome=custom_ref_genome,
+        custom_ref_trans=custom_ref_trans,
+        custom_salmon_idx=salmon_index,
+        custom_output_dir=custom_output_dir,
     )
 
 
