@@ -1,6 +1,11 @@
 FROM 812206152185.dkr.ecr.us-west-2.amazonaws.com/latch-base:9a7d-main
 
-RUN apt-get install -y curl vim zlib1g-dev
+RUN apt-get update
+RUN apt-get install -y software-properties-common &&\
+    add-apt-repository "deb http://cloud.r-project.org/bin/linux/debian buster-cran40/" &&\
+    apt-get install -y r-base r-base-dev libxml2-dev libcurl4-openssl-dev libssl-dev wget
+
+RUN apt-get install -y curl vim default-jre-headless zlib1g zlib1g-dev unzip 
 RUN python3 -m pip install cutadapt
 RUN curl -fsSL https://github.com/FelixKrueger/TrimGalore/archive/0.6.6.tar.gz -o trim_galore.tar.gz &&\
     tar xvzf trim_galore.tar.gz &&\
@@ -23,9 +28,13 @@ RUN curl -L https://github.com/deweylab/RSEM/archive/refs/tags/v1.3.3.tar.gz -o 
     cd RSEM-1.3.3 &&\
     make
 
+RUN curl -s https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.11.9.zip -O &&\
+    unzip *.zip &&\
+    chmod u+x ./FastQC/fastqc
+
 COPY gentrome.sh /root/gentrome.sh
 
-RUN python3 -m pip install --upgrade latch lgenome
+RUN python3 -m pip install --upgrade latch lgenome multiqc matplotlib numpy scipy
 COPY wf /root/wf
 ARG tag
 ENV FLYTE_INTERNAL_IMAGE $tag

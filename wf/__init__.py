@@ -6,18 +6,24 @@ import types
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import lgenome
 from dataclasses_json import dataclass_json
 from flytekit import LaunchPlan, task
 from flytekitplugins.pod import Pod
-from kubernetes.client.models import (V1Container, V1PodSpec,
-                                      V1ResourceRequirements, V1Toleration)
+from kubernetes.client.models import (
+    V1Container,
+    V1PodSpec,
+    V1ResourceRequirements,
+    V1Toleration,
+)
 from latch import small_task, workflow
 from latch.types import LatchDir, LatchFile
 from latch.types.glob import file_glob
+
+from wf.gtf_to_gbc import gtf_to_gbc
 
 
 def run(cmd: List[str]):
@@ -174,7 +180,7 @@ class GenomeData:
 @small_task
 def parse_inputs(
     genome: Union[LatchGenome, CustomGenome],
-) -> (LatchFile, LatchFile, LatchFile):
+) -> Tuple[LatchFile, LatchFile, LatchFile]:
 
     if type(genome) is LatchGenome:
         return LatchFile()
@@ -194,7 +200,7 @@ def trimgalore(
     three_prime_clip_r1: Optional[int] = None,
     three_prime_clip_r2: Optional[int] = None,
     custom_output_dir: Union[None, LatchDir] = None,
-) -> (List[Sample], List[LatchFile]):
+) -> Tuple[List[Sample], List[LatchFile]]:
 
     sample = samples[0]  # TODO
 
@@ -277,7 +283,7 @@ def sa_salmon(
     custom_ref_trans: Optional[LatchFile] = None,
     custom_salmon_idx: Optional[LatchFile] = None,
     custom_output_dir: Optional[LatchDir] = None,
-) -> List[LatchFile]:
+) -> Tuple[List[LatchFile], List[LatchDir]]:
 
     gm = lgenome.GenomeManager(ref.name)
 
@@ -366,6 +372,7 @@ def sa_salmon(
         local_index = gm.download_salmon_index()
 
     sf_files = []
+    aux_files = []
 
     sample = samples[0]  # TODO
     for reads in sample.replicates:
@@ -415,7 +422,91 @@ def sa_salmon(
             )
         )
 
-    return sf_files
+        subprocess.run(
+            [
+                "RScript",
+                "--args",
+                "/root/wf/run_tximport.R",
+                "/root/salmon_quant/quant.sf",
+                "/root/salmon_quant/genome_abundance.sf",
+                custom_gtf.local_path,
+            ],
+            check=True,
+        )
+
+        path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/Auxilliary Info"
+        if custom_output_dir is None:
+            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+        else:
+            remote_path = custom_output_dir.remote_path
+            if remote_path[-1] != "/":
+                remote_path += "/"
+            output_literal = remote_path + path_tail
+
+        aux_files.append(LatchDir("/root/salmon_quant/aux_info", output_literal))
+
+    return sf_files, aux_files
+
+
+# @small_task
+# def multiqc_task(
+#     samples: List[Sample],
+#     run_name: str,
+#     sf_files: List[LatchFile],
+#     aux_files: List[LatchDir],
+#     ref: LatchGenome,
+#     custom_ref_genome: Optional[LatchFile] = None,
+#     custom_gtf: Optional[LatchFile] = None,
+#     custom_ref_trans: Optional[LatchFile] = None,
+#     custom_salmon_idx: Optional[LatchFile] = None,
+#     custom_output_dir: Optional[LatchDir] = None,
+# ) -> List[LatchFile]:
+#     paths = []
+#     for sample in samples:
+#         for repl in sample.replicates:
+#             paths.append(Path(repl.r1))
+#             if hasattr(repl, "r2"):
+#                 paths.append(Path(repl.r2))
+
+#     subprocess.run(["/root/FastQC/fastqc", *paths], check=True)
+
+#     quant_paths = []
+
+#     for sf_file in sf_files:
+#         paths.append(Path(sf_file))
+#         quant_paths.append(Path(sf_file))
+#     for aux_dir in aux_files:
+#         paths.append(Path(aux_dir))
+
+#     subprocess.run(["multiqc", *paths], check=True)
+
+#     if custom_gtf is not None:
+#         gtf_to_gbc(Path(custom_gtf), quant_paths)
+
+#     path_tail = f"{run_name}/"
+#     if custom_output_dir is None:
+#         output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+#     else:
+#         remote_path = custom_output_dir.remote_path
+#         if remote_path[-1] != "/":
+#             remote_path += "/"
+#         output_literal = remote_path + path_tail
+
+#     return [
+#         LatchFile(
+#             "/root/multiqc_report.html",
+#             output_literal + "multiqc_report.html",
+#         ),
+#         LatchFile(
+#             "/root/gene_body_coverage.png",
+#             output_literal + "gene_body_coverage.png",
+#         ),
+#     ]
+
+
+@small_task
+def tximport_task(sf_files):
+    ...
 
 
 class AlignmentTools(Enum):
@@ -440,7 +531,7 @@ def rnaseq(
     salmon_index: Optional[LatchFile] = None,
     save_indices: bool = False,
     custom_output_dir: Optional[LatchDir] = None,
-) -> List[LatchFile]:
+) -> Tuple[List[LatchFile], List[LatchDir]]:
     """Performs alignment & quantification on Bulk RNA-Sequencing reads.
 
     Bulk RNA-Seq (Alignment & Quantification)
@@ -698,6 +789,18 @@ def rnaseq(
         custom_salmon_idx=salmon_index,
         custom_output_dir=custom_output_dir,
     )
+    # return multiqc_task(
+    #     samples=trimmed_samples,
+    #     run_name=run_name,
+    #     sf_files=quant_sfs,
+    #     aux_files=aux_files,
+    #     ref=latch_genome,
+    #     custom_ref_genome=custom_ref_genome,
+    #     custom_gtf=custom_gtf,
+    #     custom_ref_trans=custom_ref_trans,
+    #     custom_salmon_idx=salmon_index,
+    #     custom_output_dir=custom_output_dir,
+    # )
 
 
 if __name__ == "wf":
