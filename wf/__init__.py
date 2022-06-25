@@ -158,6 +158,9 @@ class Sample:
 
 class LatchGenome(Enum):
     RefSeq_hg38_p14 = "Homo sapiens (RefSeq hg38.p14)"
+    RefSeq_T2T_CHM13v2_0 = "Homo sapiens (RefSeq T2T-CHM13v2.0)"
+    RefSeq_R64 = "Saccharomyces cerevisiae (RefSeq R64)"
+    RefSeq_GRCm39 = "Mus musculus (RefSeq GRCm39)"
 
 
 # TODO - not used
@@ -417,7 +420,7 @@ def sa_salmon(
 
         sf_files.append(
             LatchFile(
-                f"/root/salmon_quant/quant.sf",
+                "/root/salmon_quant/quant.sf",
                 output_literal,
             )
         )
@@ -537,40 +540,26 @@ def rnaseq(
     Bulk RNA-Seq (Alignment & Quantification)
     ----
 
-    This workflow allows you to provide RNA sequencing sample reads and
-    generate alignment files and count tables of genes expressed based on a
-    reference genome.
+    This workflow will produce gene and transcript counts from bulk RNA-seq
+    sample reads.
 
-    This current iteration of the workflow has three steps:
+    This current iteration of the workflow has two steps:
 
     1. Automatic read trimming using [TrimGalore](https://www.bioinformatics.babraham.ac.uk/projects/trim_galore/)
-    2. Alignment (STAR) or Pseudo-Alignment (Salmon) to reference genome
-    3. Quantification of expressed genes in each sample using Salmon
+    2. Selective alignment and quantification of reads using [Salmon](https://salmon.readthedocs.io/en/latest/)
 
-    ## Alignment & Quantification Methods
+    ### More about Selective Alignment
 
-    There are two methods availible for doing alignment and quantification:
-
-    ### Traditional Alignment
-
-    This method uses an alignment tool called
-    [STAR](https://github.com/alexdobin/STAR) which will generate BAM files
-    containing the mapped reads for each sample. This method then takes these
-    alignment files and does gene quantification using
-    [Salmon](https://salmon.readthedocs.io/en/latest/salmon.html).
-
-    ### Selective Alignment
-
-    This method uses
-    [Salmon's](https://salmon.readthedocs.io/en/latest/salmon.html)
-    selective-alignment mapping algorithm to perform "pseudo-alignment" of the
-    sample reads and then does gene quantification.
+    This workflow uses Salmon's selective alignment described in this
+    [paper](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02151-8),
+    which achieves greater accuracy than traditional alignment methods while
+    using less computational resources.
 
 
     __metadata__:
         display_name: RNAseq
         author:
-            name: Kenny Workman
+            name: LatchBio
             email:
             github:
         repository: github.com/latchbio/rnaseq
@@ -581,8 +570,7 @@ def rnaseq(
           flow:
             - text: >-
                   Sample files can be provided and their read type can be
-                  inferred from their name (learn more about name formatting
-                  used here) or this information can be specified manually.
+                  inferred from their name or this information can be specified manually.
                   Sample strandedness is inferred automatically (learn more).
 
             - params:
@@ -590,16 +578,15 @@ def rnaseq(
         - section: Alignment & Quantification
           flow:
             - text: >-
-                We use "Traditional alignment" as an accurate
-                but expensive (in terms of time and computing resources)
-                option. This method in this workflow employs
-                [STAR](https://github.com/alexdobin/STAR) for alignment and
-                [Salmon](https://salmon.readthedocs.io/en/latest/salmon.html)
-                for transcript quantification.
+                  This workflow uses Salmon's selective alignment described in this
+                  [paper](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02151-8),
+                  which achieves greater accuracy than traditional alignment methods while
+                  using less computational resources.
+
             - fork: alignment_quantification_tools
               flows:
                 traditional:
-                    display_name: Traditional Alignment
+                    display_name: Selective Alignment
                     flow:
                         - fork: ta_ref_genome_fork
                           flows:
@@ -629,7 +616,7 @@ def rnaseq(
                                             These files will be generated from the
                                             GTF/Genome files if not provided.
                                         - params:
-                                            - star_index
+                                            - salmon_index
                                             - custom_ref_trans
         - section: Output Settings
           flow:
@@ -642,7 +629,7 @@ def rnaseq(
                     flow:
                     - text:
                         Output will be at default location in the data
-                        viewer - RNA-Seq A&Q Outputs > "Run Name"
+                        viewer - RNA-Seq Outputs/"Run Name"
                 custom:
                     display_name: Specify Custom Path
                     _tmp_unwrap_optionals:
@@ -650,10 +637,6 @@ def rnaseq(
                     flow:
                     - params:
                         - custom_output_dir
-          - spoiler: Advanced Output Settings
-            flow:
-              - params:
-                  - save_indices
     Args:
 
         samples:
@@ -733,10 +716,9 @@ def rnaseq(
             display_name: Provide Prebuilt STAR Index
 
         salmon_index:
-            You are able to provide a zipped prebuilt Salmon pseudo-alignment
+            You are able to provide a zipped prebuilt Salmon selective alignment
             index for your genome. This will speed up run time as the index is
-            generated if none is provided. In output settings you are able to
-            save indexes from a run to be used in future runs.
+            generated if none is provided.
 
           __metadata__:
             display_name: salmon Index
