@@ -156,6 +156,9 @@ class Sample:
 
 class LatchGenome(Enum):
     RefSeq_hg38_p14 = "Homo sapiens (RefSeq hg38.p14)"
+    RefSeq_T2T_CHM13v2_0 = "Homo sapiens (RefSeq T2T-CHM13v2.0)"
+    RefSeq_R64 = "Saccharomyces cerevisiae (RefSeq R64)"
+    RefSeq_GRCm39 = "Mus musculus (RefSeq GRCm39)"
 
 
 # TODO - not used
