@@ -25,7 +25,7 @@ class FastQRecord:
             (len(self.identifier) == 0, "Identifier cannot be empty."),
             (not self.identifier.startswith("@"), "Identifier should start with '@'."),
             (len(self.separator) == 0, "Separator should not be empty."),
-            (not self.separator.startswith("+"), "Separator start with '+'."),
+            (not self.separator.startswith("+"), "Separator should start with '+'."),
             (
                 len(self.quality_score_seq) != len(self.sequence),
                 "Quality score length should match sequence length",
