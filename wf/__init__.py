@@ -572,7 +572,7 @@ def rnaseq(
 
 
     __metadata__:
-        display_name: RNAseq
+        display_name: Bulk RNAseq
         author:
             name: LatchBio
             email:
