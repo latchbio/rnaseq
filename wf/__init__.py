@@ -425,16 +425,33 @@ def sa_salmon(
             )
         )
 
+        if custom_gtf is not None:
+            gtf_path = custom_gtf.local_path
+        else:
+            gtf_path = gm.download_gtf()
+
         subprocess.run(
             [
-                "RScript",
-                "--args",
                 "/root/wf/run_tximport.R",
+                "--args",
                 "/root/salmon_quant/quant.sf",
+                gtf_path,
                 "/root/salmon_quant/genome_abundance.sf",
-                custom_gtf.local_path,
             ],
             check=True,
+        )
+
+        path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/{sample.name}_genome_abundance.sf"
+        if custom_output_dir is None:
+            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+        else:
+            remote_path = custom_output_dir.remote_path
+            if remote_path[-1] != "/":
+                remote_path += "/"
+            output_literal = remote_path + path_tail
+
+        sf_files.append(
+            LatchFile("/root/salmon_quant/genome_abundance.sf", output_literal)
         )
 
         path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/Auxilliary Info"

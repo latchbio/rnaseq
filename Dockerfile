@@ -5,6 +5,9 @@ RUN apt-get install -y software-properties-common &&\
     add-apt-repository "deb http://cloud.r-project.org/bin/linux/debian buster-cran40/" &&\
     apt-get install -y r-base r-base-dev libxml2-dev libcurl4-openssl-dev libssl-dev wget
 
+COPY imports.R /root/imports.R
+RUN /root/imports.R
+
 RUN apt-get install -y curl vim default-jre-headless zlib1g zlib1g-dev unzip 
 RUN python3 -m pip install cutadapt
 RUN curl -fsSL https://github.com/FelixKrueger/TrimGalore/archive/0.6.6.tar.gz -o trim_galore.tar.gz &&\
@@ -35,7 +38,7 @@ RUN curl -s https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.
 COPY gentrome.sh /root/gentrome.sh
 
 RUN python3 -m pip install --upgrade latch lgenome multiqc matplotlib numpy scipy
-COPY wf /root/wf
+COPY wf/ /root/wf
 ARG tag
 ENV FLYTE_INTERNAL_IMAGE $tag
 WORKDIR /root
