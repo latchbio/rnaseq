@@ -425,6 +425,11 @@ def sa_salmon(
             )
         )
 
+        if custom_gtf is not None:
+            gtf_path = custom_gtf.local_path
+        else:
+            gtf_path = gm.download_gtf()
+
         subprocess.run(
             [
                 "RScript",
@@ -432,7 +437,7 @@ def sa_salmon(
                 "/root/wf/run_tximport.R",
                 "/root/salmon_quant/quant.sf",
                 "/root/salmon_quant/genome_abundance.sf",
-                custom_gtf.local_path,
+                gtf_path,
             ],
             check=True,
         )
