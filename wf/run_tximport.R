@@ -9,13 +9,8 @@ library(tximport)
 library(GenomicFeatures)
 
 quant_path <- args[2]
-
-# NEEDS TO BE A ARGUMENT
 gtf_path <- args[3]
-output_path <- args[4]
-if (!file.exists(output_path)) {
-    file.create(output_path)
-}
+out_path <- args[4]
 
 txdb <- makeTxDbFromGFF(gtf_path, format = "gtf")
 k <- keys(txdb, keytype = "TXNAME")
@@ -27,4 +22,4 @@ counts <- txi$counts
 
 df <- data.frame(Name = row.names(counts), NumReads = counts)
 
-write.table(df, file = output_path, quote = FALSE, row.names = FALSE, sep = "\t")
+write.table(df, file = out_path, quote = FALSE, row.names = FALSE, sep = "\t")
