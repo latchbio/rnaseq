@@ -255,7 +255,7 @@ def trimgalore(
             read_literal = remote_path + read_tail
 
         trimmed_reports = file_glob("*trimming_report.txt", report_literal)
-        trimmed = file_glob("*fq*", read_literal)
+        trimmed = file_glob("*fq.gz", read_literal) + file_glob("*fq", read_literal)
 
         if type(reads) is SingleEndReads:
             trimmed_replicates.append(SingleEndReads(r1=trimmed[0]))
