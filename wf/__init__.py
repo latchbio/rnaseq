@@ -430,16 +430,24 @@ def sa_salmon(
         else:
             gtf_path = gm.download_gtf()
 
-        subprocess.run(
-            [
-                "/root/wf/run_tximport.R",
-                "--args",
-                "/root/salmon_quant/quant.sf",
-                gtf_path,
-                "/root/salmon_quant/genome_abundance.sf",
-            ],
-            check=True,
-        )
+        try:
+            subprocess.run(
+                [
+                    "/root/wf/run_tximport.R",
+                    "--args",
+                    "/root/salmon_quant/quant.sf",
+                    gtf_path,
+                    "/root/salmon_quant/genome_abundance.sf",
+                ],
+                check=True,
+            )
+            sf_files.append(
+                LatchFile("/root/salmon_quant/genome_abundance.sf", output_literal)
+            )
+        except subprocess.CalledProcessError as e:
+            print(
+                f"Unable to produce gene mapping from tximport. Error surfaced from tximport -> {e}"
+            )
 
         path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/{sample.name}_genome_abundance.sf"
         if custom_output_dir is None:
@@ -449,10 +457,6 @@ def sa_salmon(
             if remote_path[-1] != "/":
                 remote_path += "/"
             output_literal = remote_path + path_tail
-
-        sf_files.append(
-            LatchFile("/root/salmon_quant/genome_abundance.sf", output_literal)
-        )
 
         path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/Auxilliary Info"
         if custom_output_dir is None:
