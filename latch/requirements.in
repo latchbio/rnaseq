@@ -1,0 +1,8 @@
+git+ssh://git@github.com/latchbio/flaightkit
+pyjwt
+click
+requests
+boto3
+
+typing_extensions
+tqdm

@@ -1,0 +1,14 @@
+.*sw*
+build/
+dist/
+latch.egg-info
+.hypothesis
+**/.DS_Store
+**/.pytest_cache
+
+__pycache__
+
+docs/build
+/.envrc
+/twine_creds.sh
+.vscode
