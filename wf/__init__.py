@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Union, Iterable
 from urllib.parse import urlparse
 
+from importlib_metadata import Pair
+from pandas import merge
+
 import lgenome
 from dataclasses_json import dataclass_json
 from flytekit import LaunchPlan, task
@@ -23,7 +26,6 @@ from kubernetes.client.models import (
 )
 from latch import small_task, workflow, map_task
 from latch.types import LatchDir, LatchFile
-from latch.types.glob import file_glob
 
 from wf.gtf_to_gbc import gtf_to_gbc
 
@@ -47,6 +49,45 @@ def ___repr__(self):
 
 
 LatchFile.__repr__ = types.MethodType(___repr__, LatchFile)
+
+
+def file_glob(
+    pattern: str, remote_directory: str, target_dir: Optional[Path] = None
+) -> List[LatchFile]:
+    """Constructs a list of LatchFiles from a glob pattern.
+    Convenient utility for passing collections of files between tasks. See
+    [nextflow's channels](https://www.nextflow.io/docs/latest/channel.html) or
+    [snakemake's wildcards](https://snakemake.readthedocs.io/en/stable/snakefiles/rules.html#wildcards).
+    for similar functionality in other orchestration tools.
+    The remote location of each constructed LatchFile will be consructed by
+    appending the file name returned by the pattern to the directory
+    represented by the `remote_directory`.
+    Args:
+        pattern: A glob pattern to match a set of files, eg. '*.py'. Will
+            resolve paths with respect to the working directory of the caller.
+        remote_directory: A valid latch URL pointing to a directory, eg.
+            latch:///foo. This _must_ be a directory and not a file.
+        target_dir: An optional Path object to define an alternate working
+            directory for path resolution
+    Returns:
+        A list of instantiated LatchFile objects.
+    Intended Use: ::
+        @small_task
+        def task():
+            ...
+            return file_glob("*.fastq.gz", "latch:///fastqc_outputs")
+    """
+
+    if not _is_valid_url(remote_directory):
+        return []
+
+    if target_dir is None:
+        wd = Path.cwd()
+    else:
+        wd = target_dir
+    matched = sorted(wd.glob(pattern))
+
+    return [LatchFile(str(file), remote_directory + file.name) for file in matched]
 
 
 def _is_valid_url(raw_url: str) -> bool:
@@ -167,11 +208,11 @@ class TrimgaloreInput:
     replicate: Replicate
     replicate_index: int
     run_name: str
+    base_remote_output_dir: str
     clip_r1: Optional[int]
     clip_r2: Optional[int] = None
     three_prime_clip_r1: Optional[int] = None
     three_prime_clip_r2: Optional[int] = None
-    custom_output_dir: Optional[LatchDir] = None
 
 
 @dataclass_json
@@ -184,9 +225,9 @@ class TrimgaloreOutput:
 
 @dataclass_json
 @dataclass
-class TrimgaloreOutputGroup:
+class TrimmedTechnicalReplicates:
     sample_name: str
-    outputs: List[TrimgaloreOutput]
+    replicates: List[Replicate]
 
 
 @dataclass_json
@@ -203,24 +244,29 @@ class SalmonInput:
     merged_sample: MergedSample
     run_name: str
     ref: LatchGenome
+    base_remote_output_dir: str
     custom_ref_genome: Optional[LatchFile] = None
     custom_gtf: Optional[LatchFile] = None
     custom_ref_trans: Optional[LatchFile] = None
     custom_salmon_idx: Optional[LatchFile] = None
-    custom_output_dir: Optional[LatchDir] = None
 
 
 @small_task
 def prepare_trimgalore_inputs(
     samples: List[Sample],
     run_name: str,
-    clip_r1: Optional[int],
+    clip_r1: Optional[int] = None,
     clip_r2: Optional[int] = None,
     three_prime_clip_r1: Optional[int] = None,
     three_prime_clip_r2: Optional[int] = None,
-    custom_output_dir: Union[None, LatchDir] = None,
+    custom_output_dir: Optional[LatchDir] = None,
 ) -> List[TrimgaloreInput]:
     _TMP_truncated_samples = [samples[0]]  # TODO
+    for sample in samples:
+        for rep in sample.replicates:
+            rep.r1.local_path
+            if isinstance(rep, PairedEndReads):
+                rep.r2.local_path
     return [
         TrimgaloreInput(
             sample_name=sample.name,
@@ -231,36 +277,10 @@ def prepare_trimgalore_inputs(
             clip_r2=clip_r2,
             three_prime_clip_r1=three_prime_clip_r1,
             three_prime_clip_r2=three_prime_clip_r2,
-            custom_output_dir=custom_output_dir,
+            base_remote_output_dir=_remote_output_dir(custom_output_dir),
         )
         for sample in _TMP_truncated_samples
         for i, replicate in enumerate(sample.replicates)
-    ]
-
-
-@small_task
-def prepare_salmon_inputs(
-    merged_samples: List[MergedSample],
-    run_name: str,
-    ref: LatchGenome,
-    custom_ref_genome: Optional[LatchFile] = None,
-    custom_gtf: Optional[LatchFile] = None,
-    custom_ref_trans: Optional[LatchFile] = None,
-    custom_salmon_idx: Optional[LatchFile] = None,
-    custom_output_dir: Optional[LatchDir] = None,
-) -> List[SalmonInput]:
-    return [
-        SalmonInput(
-            merged_sample=x,
-            run_name=run_name,
-            ref=ref,
-            custom_ref_genome=custom_ref_genome,
-            custom_gtf=custom_gtf,
-            custom_ref_trans=custom_ref_trans,
-            custom_salmon_idx=custom_salmon_index,
-            custom_output_dir=custom_output_dir,
-        )
-        for x in merged_samples
     ]
 
 
@@ -272,54 +292,102 @@ def _merge_replicates(
     base = _remote_output_dir(custom_output_dir)
     output_dir = f"{base}{sample_name}/"
 
+    local_r1_path = f"{sample_name}_r1_merged.fq"
     r1_path = os.path.join(output_dir, "r1_merged.fq")
-    r1 = _concatenate_files((x.r1 for x in replicates), r1_path)
+    r1 = _concatenate_files((x.r1 for x in replicates), local_r1_path, r1_path)
 
     if isinstance(replicates[0], SingleEndReads):
         return SingleEndReads(r1=r1)
 
+    local_r2_path = f"{sample_name}_r2_merged.fq"
     r2_path = os.path.join(output_dir, "r2_merged.fq")
-    r2 = _concatenate_files((x.r2 for x in replicates), r2_path)
+    r2 = _concatenate_files((x.r2 for x in replicates), local_r2_path, r2_path)
     return PairedEndReads(r1=r1, r2=r2)
 
 
-def _concatenate_files(files: Iterable[LatchFile], output_file_name: str) -> LatchFile:
-    with open(output_file_name, "w") as output_file:
+def _concatenate_files(
+    files: Iterable[LatchFile],
+    local_path: str,
+    output_file_name: str,
+) -> LatchFile:
+    path = Path(local_path).resolve()
+    with open(str(path), "w") as output_file:
         for file in files:
             with open(file.local_path, "r") as f:
                 while chunk := f.read(10000):  # todo(rohankan): better chunk size?
                     output_file.write(chunk)
-    return LatchFile(output_file_name, output_file_name)
-
-
-@small_task
-def group_trimgalore_outputs_by_sample_name(
-    outputs: List[TrimgaloreOutput],
-) -> List[TrimgaloreOutputGroup]:
-    return [
-        TrimgaloreOutputGroup(sample_name=sample_name, outputs=list(group))
-        for sample_name, group in groupby(outputs, attrgetter("sample_name"))
-    ]
+    return LatchFile(str(path), output_file_name)
 
 
 @large_spot_task
-def merge_per_sample_technical_replicates(
+def make_salmon_inputs(
+    outputs: List[TrimgaloreOutput],
     samples: List[Sample],
-    groups: List[TrimgaloreOutputGroup],
-    custom_output_dir: Optional[LatchDir],
-) -> List[MergedSample]:
+    run_name: str,
+    ref: LatchGenome,
+    custom_ref_genome: Optional[LatchFile] = None,
+    custom_gtf: Optional[LatchFile] = None,
+    custom_ref_trans: Optional[LatchFile] = None,
+    custom_salmon_idx: Optional[LatchFile] = None,
+    custom_output_dir: Optional[LatchDir] = None,
+) -> List[SalmonInput]:
+    for output in outputs:
+        output.trimmed_replicate.r1.local_path
+        if isinstance(output.trimmed_replicate, PairedEndReads):
+            output.trimmed_replicate.r2.local_path
+    groups = [
+        TrimmedTechnicalReplicates(
+            sample_name=sample_name,
+            replicates=[x.trimmed_replicate for x in group],
+        )
+        for sample_name, group in groupby(outputs, attrgetter("sample_name"))
+    ]
+
     sample_name_to_strandedness = {x.name: x.strandedness for x in samples}
-    return [
+    for group in groups:
+        for rep in group.replicates:
+            rep.r1.local_path
+            if isinstance(rep, PairedEndReads):
+                rep.r2.local_path
+
+    merged_samples = [
         MergedSample(
             name=x.sample_name,
             reads=_merge_replicates(
-                replicates=(y.trimmed_replicate for y in x.outputs),
+                replicates=x.replicates,
                 sample_name=x.sample_name,
                 custom_output_dir=custom_output_dir,
             ),
             strandedness=sample_name_to_strandedness[x.sample_name],
         )
         for x in groups
+    ]
+
+    if custom_ref_genome is not None:
+        custom_ref_genome.local_path
+    if custom_ref_trans is not None:
+        custom_ref_trans.local_path
+    if custom_salmon_idx is not None:
+        custom_salmon_idx.local_path
+    if custom_gtf is not None:
+        custom_gtf.local_path
+    # for sample in merged_samples:
+    #     sample.reads.r1.local_path
+    #     if isinstance(sample.reads, PairedEndReads):
+    #         sample.reads.r2.local_path
+
+    return [
+        SalmonInput(
+            merged_sample=x,
+            run_name=run_name,
+            ref=ref,
+            custom_ref_genome=custom_ref_genome,
+            custom_gtf=custom_gtf,
+            custom_ref_trans=custom_ref_trans,
+            custom_salmon_idx=custom_salmon_idx,
+            base_remote_output_dir=_remote_output_dir(custom_output_dir),
+        )
+        for x in merged_samples
     ]
 
 
@@ -331,11 +399,6 @@ def _remote_output_dir(custom_output_dir: Optional[LatchDir]) -> str:
     if remote_path[-1] != "/":
         remote_path += "/"
     return remote_path
-
-
-_SINGLE_TRIMGALORE_OUTPUT_FILENAME: str = "r1_trimmed.fq"
-_R1_PAIRED_TRIMGALORE_OUTPUT_FILENAME: str = "r1_val_1.fq"
-_R2_PAIRED_TRIMGALORE_OUTPUT_FILENAME: str = "r2_val_1.fq"
 
 
 def _flag_if_not_none(name: str, input: TrimgaloreInput) -> List[str]:
@@ -352,13 +415,16 @@ def trimgalore(input: TrimgaloreInput) -> TrimgaloreOutput:
         *_flag_if_not_none("three_prime_clip_r1", input),
     ]
     if isinstance(reads, SingleEndReads):
-        run(["trim_galore --cores 8", *flags, str(reads.r1.local_path)])
+        run(["trim_galore", "--cores", str(8), *flags, str(reads.r1.local_path)])
     else:
         flags.extend(_flag_if_not_none("clip_r2", input))
         flags.extend(_flag_if_not_none("three_prime_clip_r2", input))
         run(
             [
-                "trim_galore --cores 8 --paired",
+                "trim_galore",
+                "--cores",
+                str(8),
+                "--paired",
                 *flags,
                 str(reads.r1.local_path),
                 str(reads.r2.local_path),
@@ -367,26 +433,17 @@ def trimgalore(input: TrimgaloreInput) -> TrimgaloreOutput:
 
     base = f"{input.run_name}/Quality Control Data"
     end = f"{input.sample_name}/replicate_{input.replicate_index}/"
-    remote_dir = _remote_output_dir(input.custom_output_dir)
+    remote_dir = input.base_remote_output_dir
     report_dir = remote_dir + f"{base}/Trimming Reports (TrimGalore)/{end}"
     read_dir = remote_dir + f"{base}/Trimming Reads (TrimGalore)/{end}"
 
     if isinstance(reads, SingleEndReads):
-        r1 = LatchFile(
-            _SINGLE_TRIMGALORE_OUTPUT_FILENAME,
-            os.path.join(read_dir, _SINGLE_TRIMGALORE_OUTPUT_FILENAME),
-        )
-        trimmed_replicate = SingleEndReads(r1=r1)
+        reads = file_glob("*trimmed.fq", read_dir)
+        trimmed_replicate = SingleEndReads(r1=reads[0])
     else:
-        r1 = LatchFile(
-            _R1_PAIRED_TRIMGALORE_OUTPUT_FILENAME,
-            os.path.join(read_dir, _R1_PAIRED_TRIMGALORE_OUTPUT_FILENAME),
-        )
-        r2 = LatchFile(
-            _R2_PAIRED_TRIMGALORE_OUTPUT_FILENAME,
-            os.path.join(read_dir, _R2_PAIRED_TRIMGALORE_OUTPUT_FILENAME),
-        )
-        trimmed_replicate = PairedEndReads(r1=r1, r2=r2)
+        # File glob storts files alphanumerically
+        reads = file_glob("*val*.fq", read_dir)
+        trimmed_replicate = PairedEndReads(r1=reads[0], r2=reads[1])
 
     # Side effect of trimgalore task - will not be used in future tasks
     reports = file_glob("*trimming_report.txt", report_dir)
@@ -427,7 +484,6 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
     custom_gtf = input.custom_gtf
     sample = input.merged_sample
     run_name = input.run_name
-    custom_output_dir = input.custom_output_dir
 
     if custom_salmon_idx is not None:
         # TODO: validate provided index...
@@ -511,7 +567,7 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
 
     sf_files = []
 
-    reads = merged_sample.reads
+    reads = sample.reads
     if isinstance(reads, SingleEndReads):
         reads = ["-r", str(reads.r1.local_path)]
     else:
@@ -542,14 +598,7 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
     path_tail = (
         f"{run_name}/Quantification (salmon)/{sample.name}/{sample.name}_quant.sf"
     )
-    if custom_output_dir is None:
-        output_literal = "latch:///RNA-Seq Outputs/" + path_tail
-    else:
-        remote_path = custom_output_dir.remote_path
-        if remote_path[-1] != "/":
-            remote_path += "/"
-        output_literal = remote_path + path_tail
-
+    output_literal = input.base_remote_output_dir + path_tail
     sf_files.append(LatchFile("/root/salmon_quant/quant.sf", output_literal))
 
     if custom_gtf is not None:
@@ -570,13 +619,7 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
         )
 
         path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/{sample.name}_genome_abundance.sf"
-        if custom_output_dir is None:
-            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
-        else:
-            remote_path = custom_output_dir.remote_path
-            if remote_path[-1] != "/":
-                remote_path += "/"
-            output_literal = remote_path + path_tail
+        output_literal = input.base_remote_output_dir + path_tail
 
         sf_files.append(
             LatchFile("/root/salmon_quant/genome_abundance.sf", output_literal)
@@ -587,14 +630,7 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
         )
 
     path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/Auxilliary Info"
-    if custom_output_dir is None:
-        output_literal = "latch:///RNA-Seq Outputs/" + path_tail
-    else:
-        remote_path = custom_output_dir.remote_path
-        if remote_path[-1] != "/":
-            remote_path += "/"
-        output_literal = remote_path + path_tail
-
+    output_literal = input.base_remote_output_dir + path_tail
     aux_dir = LatchDir("/root/salmon_quant/aux_info", output_literal)
 
     return SalmonOutput(sf_files=sf_files, aux_dir=aux_dir)
@@ -605,7 +641,7 @@ def merge_salmon_outputs(
     outputs: List[SalmonOutput],
 ) -> Tuple[List[LatchFile], LatchDir]:
     _TMP_truncated_output = [outputs[0]]  # todo(rohankan): handle more samples
-    return [(x.sf_files, x.aux_dir) for x in _TMP_truncated_output][0]
+    return [(x.sf_files, [x.aux_dir]) for x in _TMP_truncated_output][0]
 
 
 # @small_task
@@ -665,8 +701,10 @@ def merge_salmon_outputs(
 
 
 @small_task
-def tximport_task(sf_files):
-    ...
+def tester_task(samples: List[MergedSample]) -> List[LatchFile]:
+    for x in samples:
+        x.reads.r1.local_path
+    return [x.reads.r1 for x in samples]
 
 
 class AlignmentTools(Enum):
@@ -675,7 +713,7 @@ class AlignmentTools(Enum):
 
 
 @workflow
-def rnaseq(
+def rnaseq_mapreduce(
     samples: List[Sample],
     alignment_quantification_tools: AlignmentTools,
     ta_ref_genome_fork: str,
@@ -910,29 +948,21 @@ def rnaseq(
     """
     trimgalore_inputs = prepare_trimgalore_inputs(
         samples=samples,
+        run_name=run_name,
         clip_r1=None,
         clip_r2=None,
         three_prime_clip_r1=None,
         three_prime_clip_r2=None,
-        run_name=run_name,
         custom_output_dir=custom_output_dir,
     )
     trimgalore_outputs = map_task(trimgalore)(input=trimgalore_inputs)
-    groups = group_trimgalore_outputs_by_sample_name(
+    salmon_inputs = make_salmon_inputs(
         outputs=trimgalore_outputs,
-    )
-    # todo(rohankan): consider making this a map task
-    merged_samples = merge_per_sample_technical_replicates(
         samples=samples,
-        groups=groups,
-        custom_output_dir=custom_output_dir,
-    )
-    salmon_inputs = prepare_salmon_inputs(
-        merged_samples=merged_samples,
-        ref=latch_genome,
         run_name=run_name,
-        custom_gtf=custom_gtf,
+        ref=latch_genome,
         custom_ref_genome=custom_ref_genome,
+        custom_gtf=custom_gtf,
         custom_ref_trans=custom_ref_trans,
         custom_salmon_idx=salmon_index,
         custom_output_dir=custom_output_dir,
@@ -954,8 +984,8 @@ def rnaseq(
 
 if __name__ == "wf":
     LaunchPlan.create(
-        "wf.__init__.rnaseq.Test Data",
-        rnaseq,
+        "wf.__init__.rnaseq_mapreduce.Test Data",
+        rnaseq_mapreduce,
         default_inputs={
             "samples": [
                 Sample(
