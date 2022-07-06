@@ -441,6 +441,16 @@ def sa_salmon(
                 ],
                 check=True,
             )
+
+            path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/{sample.name}_genome_abundance.sf"
+            if custom_output_dir is None:
+                output_literal = "latch:///RNA-Seq Outputs/" + path_tail
+            else:
+                remote_path = custom_output_dir.remote_path
+                if remote_path[-1] != "/":
+                    remote_path += "/"
+                output_literal = remote_path + path_tail
+
             sf_files.append(
                 LatchFile("/root/salmon_quant/genome_abundance.sf", output_literal)
             )
@@ -448,15 +458,6 @@ def sa_salmon(
             print(
                 f"Unable to produce gene mapping from tximport. Error surfaced from tximport -> {e}"
             )
-
-        path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/{sample.name}_genome_abundance.sf"
-        if custom_output_dir is None:
-            output_literal = "latch:///RNA-Seq Outputs/" + path_tail
-        else:
-            remote_path = custom_output_dir.remote_path
-            if remote_path[-1] != "/":
-                remote_path += "/"
-            output_literal = remote_path + path_tail
 
         path_tail = f"{run_name}/Quantification (salmon)/{sample.name}/Auxilliary Info"
         if custom_output_dir is None:
