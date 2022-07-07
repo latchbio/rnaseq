@@ -4,6 +4,7 @@ args <- commandArgs(trailingOnly = TRUE)
 if (length(args) == 0) {
     stop("One argument must be supplied (GTF file).n", call. = FALSE)
 }
+
 library(tximport)
 library(GenomicFeatures)
 

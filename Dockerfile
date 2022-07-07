@@ -37,6 +37,7 @@ RUN curl -s https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.
 
 COPY gentrome.sh /root/gentrome.sh
 
+
 RUN python3 -m pip install --upgrade latch lgenome multiqc matplotlib numpy scipy
 COPY wf/ /root/wf
 ARG tag
