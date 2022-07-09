@@ -1084,8 +1084,8 @@ def rnaseq(
 
 if __name__ == "wf":
     LaunchPlan.create(
-        "wf.__init__.rnaseq_mapreduce.Test Data",
-        rnaseq_mapreduce,
+        "wf.__init__.rnaseq.Test Data",
+        rnaseq,
         default_inputs={
             "samples": [
                 Sample(
