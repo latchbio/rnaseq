@@ -6,6 +6,7 @@ from itertools import groupby
 from logging import captureWarnings
 from operator import attrgetter
 import os
+from random import sample
 import re
 import shutil
 import subprocess
@@ -30,8 +31,10 @@ from kubernetes.client.models import (
 )
 from latch import small_task, workflow, map_task, message
 from latch.types import LatchDir, LatchFile
+from flytekit.types.file import FlyteFile
 
 from wf.gtf_to_gbc import gtf_to_gbc
+import time
 
 
 def _capture_output(command: List[str]) -> Tuple[int, str]:
@@ -147,7 +150,7 @@ large_spot_task = task(task_config=_get_96_spot_pod())
 
 @dataclass_json
 @dataclass
-class SingleRead:
+class SingleEndReads:
     r1: LatchFile
 
 
@@ -167,7 +170,7 @@ class Strandedness(Enum):
     auto = "auto"
 
 
-Replicate = Union[SingleRead, PairedEndReads]
+Replicate = Union[SingleEndReads, PairedEndReads]
 
 
 @dataclass_json
@@ -226,13 +229,6 @@ class TrimgaloreOutput:
 
 @dataclass_json
 @dataclass
-class TrimmedTechnicalReplicates:
-    sample_name: str
-    replicates: List[Replicate]
-
-
-@dataclass_json
-@dataclass
 class MergedSample:
     name: str
     reads: Replicate
@@ -243,7 +239,7 @@ class MergedSample:
 @dataclass
 class SalmonInput:
     sample_name: str
-    reads: Replicate
+    trimmed_replicates: List[Replicate]
     strandedness: Strandedness
     run_name: str
     ref: str
@@ -263,11 +259,12 @@ def prepare_trimgalore_inputs(
     three_prime_clip_r2: Optional[int] = None,
     custom_output_dir: Optional[LatchDir] = None,
 ) -> List[TrimgaloreInput]:
-    for sample in samples:
-        for rep in sample.replicates:
-            rep.r1.local_path
-            if isinstance(rep, PairedEndReads):
-                rep.r2.local_path
+    print(
+        [
+            [(y.r1._remote_source, y.r1.remote_path) for y in x.replicates]
+            for x in samples
+        ]
+    )
     return [
         TrimgaloreInput(
             sample_name=sample.name,
@@ -286,38 +283,27 @@ def prepare_trimgalore_inputs(
 
 
 def _merge_replicates(
-    replicates: List[Replicate],
-    run_name: str,
-    sample_name: str,
-    custom_output_dir: Optional[LatchDir],
-) -> Replicate:
-    base = _remote_output_dir(custom_output_dir)
-    output_dir = f"{base}{run_name}/Quantification Inputs/Merged Reads/{sample_name}/"
-
+    replicates: List[Replicate], sample_name: str
+) -> Union[Tuple[Path], Tuple[Path, Path]]:
     local_r1_path = f"{sample_name}_r1_merged.fq"
-    r1_path = os.path.join(output_dir, "r1_merged.fq")
-    r1 = _concatenate_files((x.r1 for x in replicates), local_r1_path, r1_path)
+    r1 = _concatenate_files((x.r1 for x in replicates), local_r1_path)
 
-    if isinstance(replicates[0], SingleRead):
-        return SingleRead(r1=r1)
+    if isinstance(replicates[0], SingleEndReads):
+        return (r1,)
 
     local_r2_path = f"{sample_name}_r2_merged.fq"
-    r2_path = os.path.join(output_dir, "r2_merged.fq")
-    r2 = _concatenate_files((x.r2 for x in replicates), local_r2_path, r2_path)
-    return PairedEndReads(r1=r1, r2=r2)
+    r2 = _concatenate_files((x.r2 for x in replicates), local_r2_path)
+    return (r1, r2)
 
 
-def _concatenate_files(
-    files: Iterable[LatchFile],
-    local_path: str,
-    output_file_name: str,
-) -> LatchFile:
+def _concatenate_files(files: Iterable[LatchFile], local_path: str) -> Path:
     path = Path(local_path).resolve()
     with path.open("w") as output_file:
         for file in files:
-            with open(file.local_path, "r") as f:
+            p = file.local_path.removesuffix(".gz")
+            with open(p, "r") as f:
                 shutil.copyfileobj(f, output_file)
-    return LatchFile(str(path), output_file_name)
+    return path
 
 
 @large_spot_task
@@ -332,39 +318,6 @@ def make_salmon_inputs(
     custom_salmon_idx: Optional[LatchFile] = None,
     custom_output_dir: Optional[LatchDir] = None,
 ) -> List[SalmonInput]:
-    for output in outputs:
-        output.trimmed_replicate.r1.local_path
-        if isinstance(output.trimmed_replicate, PairedEndReads):
-            output.trimmed_replicate.r2.local_path
-    groups = [
-        TrimmedTechnicalReplicates(
-            sample_name=sample_name,
-            replicates=[x.trimmed_replicate for x in group],
-        )
-        for sample_name, group in groupby(outputs, attrgetter("sample_name"))
-    ]
-
-    sample_name_to_strandedness = {x.name: x.strandedness for x in samples}
-    for group in groups:
-        for rep in group.replicates:
-            rep.r1.local_path
-            if isinstance(rep, PairedEndReads):
-                rep.r2.local_path
-
-    merged_samples = [
-        MergedSample(
-            name=x.sample_name,
-            reads=_merge_replicates(
-                replicates=x.replicates,
-                run_name=run_name,
-                sample_name=x.sample_name,
-                custom_output_dir=custom_output_dir,
-            ),
-            strandedness=sample_name_to_strandedness[x.sample_name],
-        )
-        for x in groups
-    ]
-
     custom_names = []
     custom_files = []
     if custom_ref_genome is not None:
@@ -384,18 +337,19 @@ def make_salmon_inputs(
         custom_names.append("gtf")
         custom_files.append(custom_gtf)
 
+    sample_name_to_strandedness = {x.name: x.strandedness for x in samples}
     return [
         SalmonInput(
-            sample_name=x.name,
-            reads=x.reads,
-            strandedness=x.strandedness,
+            sample_name=sample_name,
+            trimmed_replicates=[x.trimmed_replicate for x in group],
+            strandedness=sample_name_to_strandedness[sample_name],
             run_name=run_name,
             ref=ref.name,
             base_remote_output_dir=_remote_output_dir(custom_output_dir),
             custom_names=custom_names,
             custom_files=custom_files,
         )
-        for x in merged_samples
+        for sample_name, group in groupby(outputs, attrgetter("sample_name"))
     ]
 
 
@@ -426,14 +380,31 @@ def trimgalore(input: TrimgaloreInput) -> TrimgaloreOutput:
         flags += ["--paired", *_flag("clip_r2"), *_flag("three_prime_clip_r2")]
         read_paths.append(str(reads.r2.local_path))
 
-    trimgalore_command = ["trim_galore", "--cores", str(8), *flags, *read_paths]
-    returncode, stdout = _capture_output(trimgalore_command)
+    returncode, stdout = _capture_output(
+        [
+            "trim_galore",
+            "--cores",
+            str(8),
+            "--dont_gzip",
+            *flags,
+            *read_paths,
+        ]
+    )
 
     # todo(rohankan): examine trimgalore for useful warnings and add them here
     if returncode != 0:
         stdout = stdout.rstrip()
         stdout = stdout[stdout.rindex("\n") + 1 :]
-        message("error", {"title": "Trimgalore error", "body": stdout})
+        assert reads.r1.remote_path is not None
+        path_name = reads.r1.remote_path.split("/")[-1]
+        identifier = f"sample {input.sample_name}, replicate {path_name}"
+        message(
+            "error",
+            {
+                "title": f"Trimgalore error for {identifier}",
+                "body": stdout,
+            },
+        )
         raise TrimgaloreError(stdout)
 
     def _output_path(middle: str) -> str:
@@ -442,12 +413,12 @@ def trimgalore(input: TrimgaloreInput) -> TrimgaloreOutput:
         return f"{base}/Quality Control Data/Trimming {middle} (TrimGalore)/{tail}"
 
     reads_directory = _output_path("Reads")
-    if isinstance(reads, SingleRead):
-        (r1,) = file_glob("*trimmed.fq", reads_directory)
-        trimmed_replicate = SingleRead(r1=r1)
+    if isinstance(reads, SingleEndReads):
+        (r1,) = file_glob("*trimmed.fq*", reads_directory)
+        trimmed_replicate = SingleEndReads(r1=r1)
     else:
         # File glob sorts files alphanumerically
-        r1, r2 = file_glob("*val*.fq", reads_directory)
+        r1, r2 = file_glob("*val*.fq*", reads_directory)
         trimmed_replicate = PairedEndReads(r1=r1, r2=r2)
 
     # Just so that the trimming reports are outputted; they're not going to be
@@ -593,16 +564,13 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
 
     sf_files = []
 
-    reads = input.reads
-    if isinstance(reads, SingleRead):
-        reads = ["-r", str(reads.r1.local_path)]
+    merged = _merge_replicates([x for x in input.trimmed_replicates], input.sample_name)
+    if len(merged) == 1:
+        (r1,) = merged
+        reads = ["-r", str(r1)]
     else:
-        reads = ["-1", str(reads.r1.local_path), "-2", str(reads.r2.local_path)]
-
-    for i, read in enumerate(reads):
-        if read.endswith(".gz"):
-            run(["gunzip", read])
-            reads[i] = read.removesuffix(".gz")
+        r1, r2 = merged
+        reads = ["-1", str(r1), "-2", str(r2)]
 
     returncode, stdout = _capture_output(
         [
@@ -623,21 +591,16 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
 
     # todo(rohankan): Add info messages too? Decide which Salmon logs
     # are interesting or important enough to show on console
+    identifier = f"sample {input.sample_name}"
     for alert_type, alert_message in re.findall(_SALMON_ALERT_PATTERN, stdout):
-        data = {"title": f"Salmon {alert_type}", "body": alert_message}
+        data = {"title": f"Salmon {alert_type} for {identifier}", "body": alert_message}
         if alert_type == "warning":
             message("warning", data)
         else:
             message("error", data)
 
     if returncode != 0:
-        return SalmonOutput(
-            passed_salmon=False,
-            passed_tximport=False,
-            sample_name=input.sample_name,
-            sf_files=[],
-            auxiliary_directory=[],
-        )
+        raise RuntimeError("Error occurred while running Salmon")
 
     sf_files.append(
         LatchFile(
@@ -671,17 +634,11 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
             )
         )
     except subprocess.CalledProcessError as e:
-        message("error", {"title": "tximport error", "body": str(e)})
+        message("error", {"title": f"tximport error for {identifier}", "body": str(e)})
         print(
             f"Unable to produce gene mapping from tximport. Error surfaced from tximport -> {e}"
         )
-        return SalmonOutput(
-            passed_salmon=True,
-            passed_tximport=False,
-            sample_name=input.sample_name,
-            sf_files=sf_files,
-            auxiliary_directory=[],
-        )
+        raise RuntimeError(f"Tximport error: {e}")
 
     auxiliary_directory = LatchDir(
         "/root/salmon_quant/aux_info",
@@ -738,9 +695,13 @@ def count_matrix_and_multiqc(
                     combined_counts[gene_name][output.sample_name] = row["NumReads"]
 
         raw_count_table_path = Path("./counts.tsv").resolve()
-        with raw_count_table_path.open("w") as f:
+        with raw_count_table_path.open("w") as file:
             sample_names = (x.sample_name for x in tximport_outputs)
-            writer = csv.DictWriter(f, [_COUNT_TABLE_GENE_ID_COLUMN, *sample_names])
+            writer = csv.DictWriter(
+                file,
+                [_COUNT_TABLE_GENE_ID_COLUMN, *sample_names],
+                delimiter="\t",
+            )
             writer.writeheader()
             for gene_id, data in combined_counts.items():
                 data[_COUNT_TABLE_GENE_ID_COLUMN] = gene_id
