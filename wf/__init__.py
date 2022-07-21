@@ -2,11 +2,6 @@
 
 from collections import defaultdict
 import csv
-from itertools import groupby
-from logging import captureWarnings
-from operator import attrgetter
-import os
-from random import sample
 import re
 import shutil
 import subprocess
@@ -16,8 +11,7 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Tuple, Union, Iterable
 from urllib.parse import urlparse
-
-from pandas import merge
+import os
 
 import lgenome
 from dataclasses_json import dataclass_json
@@ -31,10 +25,8 @@ from kubernetes.client.models import (
 )
 from latch import small_task, workflow, map_task, message
 from latch.types import LatchDir, LatchFile
-from flytekit.types.file import FlyteFile
 
 from wf.gtf_to_gbc import gtf_to_gbc
-import time
 
 
 def _capture_output(command: List[str]) -> Tuple[int, str]:
@@ -170,6 +162,11 @@ class Strandedness(Enum):
     auto = "auto"
 
 
+class AlignmentTools(Enum):
+    star_salmon = "Traditional Alignment + Quantification"
+    salmon = "Selective Alignment + Quantification"
+
+
 Replicate = Union[SingleEndReads, PairedEndReads]
 
 
@@ -207,24 +204,37 @@ class GenomeData:
 
 @dataclass_json
 @dataclass
-class TrimgaloreInput:
+class TrimgaloreSalmonInput:
     sample_name: str
-    replicate: Replicate
-    replicate_index: int
+    replicates: List[Replicate]
     run_name: str
     base_remote_output_dir: str
-    clip_r1: Optional[int]
+    latch_genome: LatchGenome
+    bams: List[List[LatchFile]]
+    custom_names: List[LatchFile]
+    custom_files: List[LatchFile]
+    clip_r1: Optional[int] = None
     clip_r2: Optional[int] = None
     three_prime_clip_r1: Optional[int] = None
     three_prime_clip_r2: Optional[int] = None
+    # custom_gtf: Optional[LatchFile] = None
+    # custom_ref_genome: Optional[LatchFile] = None
+    # custom_ref_trans: Optional[LatchFile] = None
+    # star_index: Optional[LatchFile] = None
+    # custom_salmon_index: Optional[LatchFile] = None
+    save_indices: bool = False
 
 
 @dataclass_json
 @dataclass
-class TrimgaloreOutput:
+class TrimgaloreSalmonOutput:
+    passed_salmon: bool
+    passed_tximport: bool
     sample_name: str
-    trimmed_replicate: Replicate
-    reports: List[LatchFile]
+    sf_files: List[LatchFile]
+    auxiliary_directory: List[LatchDir]
+    trimmed_reads: List[Replicate]
+    trimgalore_reports: List[LatchFile]
 
 
 @dataclass_json
@@ -250,35 +260,54 @@ class SalmonInput:
 
 
 @small_task
-def prepare_trimgalore_inputs(
+def prepare_trimgalore_salmon_inputs(
     samples: List[Sample],
     run_name: str,
+    latch_genome: LatchGenome,
+    bams: List[List[LatchFile]],
+    save_indices: bool,
     clip_r1: Optional[int] = None,
     clip_r2: Optional[int] = None,
     three_prime_clip_r1: Optional[int] = None,
     three_prime_clip_r2: Optional[int] = None,
     custom_output_dir: Optional[LatchDir] = None,
-) -> List[TrimgaloreInput]:
-    print(
-        [
-            [(y.r1._remote_source, y.r1.remote_path) for y in x.replicates]
-            for x in samples
-        ]
-    )
+    custom_gtf: Optional[LatchFile] = None,
+    custom_ref_genome: Optional[LatchFile] = None,
+    custom_ref_trans: Optional[LatchFile] = None,
+    custom_salmon_index: Optional[LatchFile] = None,
+) -> List[TrimgaloreSalmonInput]:
+    custom_names = []
+    custom_files = []
+    if custom_ref_genome is not None:
+        custom_names.append("genome")
+        custom_files.append(custom_ref_genome)
+    if custom_ref_trans is not None:
+        custom_names.append("trans")
+        custom_files.append(custom_ref_trans)
+    if custom_salmon_index is not None:
+        custom_names.append("index")
+        custom_files.append(custom_salmon_index)
+    if custom_gtf is not None:
+        custom_names.append("gtf")
+        custom_files.append(custom_gtf)
+
     return [
-        TrimgaloreInput(
+        TrimgaloreSalmonInput(
             sample_name=sample.name,
-            replicate=replicate,
-            replicate_index=i,
+            replicates=sample.replicates,
             run_name=run_name,
             clip_r1=clip_r1,
             clip_r2=clip_r2,
             three_prime_clip_r1=three_prime_clip_r1,
             three_prime_clip_r2=three_prime_clip_r2,
             base_remote_output_dir=_remote_output_dir(custom_output_dir),
+            latch_genome=latch_genome,
+            bams=bams,
+            custom_names=custom_names,
+            custom_files=custom_files,
+            save_indices=save_indices,
         )
         for sample in samples
-        for i, replicate in enumerate(sample.replicates)
     ]
 
 
@@ -286,71 +315,25 @@ def _merge_replicates(
     replicates: List[Replicate], sample_name: str
 ) -> Union[Tuple[Path], Tuple[Path, Path]]:
     local_r1_path = f"{sample_name}_r1_merged.fq"
-    r1 = _concatenate_files((x.r1 for x in replicates), local_r1_path)
+    r1 = _concatenate_files((str(x.r1.path) for x in replicates), local_r1_path)
 
     if isinstance(replicates[0], SingleEndReads):
         return (r1,)
 
+    assert all(isinstance(x, PairedEndReads) for x in replicates)
     local_r2_path = f"{sample_name}_r2_merged.fq"
-    r2 = _concatenate_files((x.r2 for x in replicates), local_r2_path)
+    r2 = _concatenate_files((str(x.r2.path) for x in replicates), local_r2_path)
     return (r1, r2)
 
 
-def _concatenate_files(files: Iterable[LatchFile], local_path: str) -> Path:
-    path = Path(local_path).resolve()
+def _concatenate_files(filepaths: Iterable[str], output_path: str) -> Path:
+    path = Path(output_path).resolve()
     with path.open("w") as output_file:
-        for file in files:
-            p = file.local_path.removesuffix(".gz")
+        for p in filepaths:
+            p = p.removesuffix(".gz")
             with open(p, "r") as f:
                 shutil.copyfileobj(f, output_file)
     return path
-
-
-@large_spot_task
-def make_salmon_inputs(
-    outputs: List[TrimgaloreOutput],
-    samples: List[Sample],
-    run_name: str,
-    ref: LatchGenome,
-    custom_ref_genome: Optional[LatchFile] = None,
-    custom_gtf: Optional[LatchFile] = None,
-    custom_ref_trans: Optional[LatchFile] = None,
-    custom_salmon_idx: Optional[LatchFile] = None,
-    custom_output_dir: Optional[LatchDir] = None,
-) -> List[SalmonInput]:
-    custom_names = []
-    custom_files = []
-    if custom_ref_genome is not None:
-        custom_ref_genome.local_path
-        custom_names.append("genome")
-        custom_files.append(custom_ref_genome)
-    if custom_ref_trans is not None:
-        custom_ref_trans.local_path
-        custom_names.append("trans")
-        custom_files.append(custom_ref_trans)
-    if custom_salmon_idx is not None:
-        custom_salmon_idx.local_path
-        custom_names.append("index")
-        custom_files.append(custom_salmon_idx)
-    if custom_gtf is not None:
-        custom_gtf.local_path
-        custom_names.append("gtf")
-        custom_files.append(custom_gtf)
-
-    sample_name_to_strandedness = {x.name: x.strandedness for x in samples}
-    return [
-        SalmonInput(
-            sample_name=sample_name,
-            trimmed_replicates=[x.trimmed_replicate for x in group],
-            strandedness=sample_name_to_strandedness[sample_name],
-            run_name=run_name,
-            ref=ref.name,
-            base_remote_output_dir=_remote_output_dir(custom_output_dir),
-            custom_names=custom_names,
-            custom_files=custom_files,
-        )
-        for sample_name, group in groupby(outputs, attrgetter("sample_name"))
-    ]
 
 
 def _remote_output_dir(custom_output_dir: Optional[LatchDir]) -> str:
@@ -367,25 +350,30 @@ class TrimgaloreError(Exception):
     pass
 
 
-@large_spot_task
-def trimgalore(input: TrimgaloreInput) -> TrimgaloreOutput:
+def do_trimgalore(
+    ts_input: TrimgaloreSalmonInput,
+    replicate_index: int,
+    reads: Replicate,
+) -> Tuple[List[LatchFile], Replicate]:
     def _flag(name: str) -> List[str]:
-        value = getattr(input, name)
+        value = getattr(ts_input, name)
         return [f"--{name}", value] if value is not None else []
 
-    reads = input.replicate
     flags = [*_flag("clip_r1"), *_flag("three_prime_clip_r1")]
     read_paths = [str(reads.r1.local_path)]
     if isinstance(reads, PairedEndReads):
         flags += ["--paired", *_flag("clip_r2"), *_flag("three_prime_clip_r2")]
         read_paths.append(str(reads.r2.local_path))
 
+    local_output = f"{ts_input.sample_name}_replicate_{replicate_index}"
     returncode, stdout = _capture_output(
         [
             "trim_galore",
             "--cores",
             str(8),
             "--dont_gzip",
+            "--output_dir",
+            f"./{local_output}",
             *flags,
             *read_paths,
         ]
@@ -397,7 +385,7 @@ def trimgalore(input: TrimgaloreInput) -> TrimgaloreOutput:
         stdout = stdout[stdout.rindex("\n") + 1 :]
         assert reads.r1.remote_path is not None
         path_name = reads.r1.remote_path.split("/")[-1]
-        identifier = f"sample {input.sample_name}, replicate {path_name}"
+        identifier = f"sample {ts_input.sample_name}, replicate {path_name}"
         message(
             "error",
             {
@@ -408,78 +396,115 @@ def trimgalore(input: TrimgaloreInput) -> TrimgaloreOutput:
         raise TrimgaloreError(stdout)
 
     def _output_path(middle: str) -> str:
-        base = f"{input.base_remote_output_dir}{input.run_name}"
-        tail = f"{input.sample_name}/replicate_{input.replicate_index}/"
+        base = f"{ts_input.base_remote_output_dir}{ts_input.run_name}"
+        tail = f"{ts_input.sample_name}/replicate_{replicate_index}/"
         return f"{base}/Quality Control Data/Trimming {middle} (TrimGalore)/{tail}"
 
     reads_directory = _output_path("Reads")
     if isinstance(reads, SingleEndReads):
-        (r1,) = file_glob("*trimmed.fq*", reads_directory)
+        (r1,) = file_glob(f"{local_output}/*trimmed.fq*", reads_directory)
         trimmed_replicate = SingleEndReads(r1=r1)
     else:
         # File glob sorts files alphanumerically
-        r1, r2 = file_glob("*val*.fq*", reads_directory)
+        r1, r2 = file_glob(f"{local_output}/*val*.fq*", reads_directory)
         trimmed_replicate = PairedEndReads(r1=r1, r2=r2)
 
-    # Just so that the trimming reports are outputted; they're not going to be
-    # used in downstream Bulk RNA-seq analysis
     reports_directory = _output_path("Reports")
     reports = file_glob("*trimming_report.txt", reports_directory)
 
-    return TrimgaloreOutput(
-        sample_name=input.sample_name,
-        trimmed_replicate=trimmed_replicate,
-        reports=reports,
-    )
-
-
-class InsufficientCustomGenomeResources(Exception):
-    pass
-
-
-class MalformedSalmonIndex(Exception):
-    pass
-
-
-class SalmonError(Exception):
-    pass
-
-
-@dataclass_json
-@dataclass
-class SalmonOutput:
-    passed_salmon: bool
-    passed_tximport: bool
-    sample_name: str
-    sf_files: List[LatchFile]
-    auxiliary_directory: List[LatchDir]
-
-
-# Each Salmon warning or error log starts with a timestamp surrounded in square
-# brackets ('\d{4}' represents the first part of the timestamp - the year)
-_SALMON_ALERT_PATTERN = re.compile(r"\[(warning|error)\] (.+?)(?:\[\d{4}|$)", re.DOTALL)
-
-
-def _salmon_output_path(inp: SalmonInput, suffix: str) -> str:
-    return f"{inp.base_remote_output_dir}{inp.run_name}/Quantification (salmon)/{inp.sample_name}/{suffix}"
+    return reports, trimmed_replicate
 
 
 @large_spot_task
-def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
-    gm = lgenome.GenomeManager(input.ref)
+def trimgalore_salmon(
+    samples: List[Sample],
+    run_name: str,
+    latch_genome: LatchGenome,
+    bams: List[List[LatchFile]],
+    save_indices: bool,
+    clip_r1: Optional[int] = None,
+    clip_r2: Optional[int] = None,
+    three_prime_clip_r1: Optional[int] = None,
+    three_prime_clip_r2: Optional[int] = None,
+    custom_output_dir: Optional[LatchDir] = None,
+    custom_gtf: Optional[LatchFile] = None,
+    custom_ref_genome: Optional[LatchFile] = None,
+    custom_ref_trans: Optional[LatchFile] = None,
+    custom_salmon_index: Optional[LatchFile] = None,
+) -> List[TrimgaloreSalmonOutput]:
+    custom_names = []
+    custom_files = []
+    if custom_ref_genome is not None:
+        custom_names.append("genome")
+        custom_files.append(custom_ref_genome)
+    if custom_ref_trans is not None:
+        custom_names.append("trans")
+        custom_files.append(custom_ref_trans)
+    if custom_salmon_index is not None:
+        custom_names.append("index")
+        custom_files.append(custom_salmon_index)
+    if custom_gtf is not None:
+        custom_names.append("gtf")
+        custom_files.append(custom_gtf)
+
+    inputs = [
+        TrimgaloreSalmonInput(
+            sample_name=sample.name,
+            replicates=sample.replicates,
+            run_name=run_name,
+            clip_r1=clip_r1,
+            clip_r2=clip_r2,
+            three_prime_clip_r1=three_prime_clip_r1,
+            three_prime_clip_r2=three_prime_clip_r2,
+            base_remote_output_dir=_remote_output_dir(custom_output_dir),
+            latch_genome=latch_genome,
+            bams=bams,
+            custom_names=custom_names,
+            custom_files=custom_files,
+            save_indices=save_indices,
+        )
+        for sample in samples
+    ]
+
+    gm = lgenome.GenomeManager(latch_genome.name)
+    gtf_path = (
+        custom_gtf.local_path
+        if custom_gtf is not None
+        else gm.download_gtf(show_progress=False)
+    )
+
+    outputs = []
+    for i, inp in enumerate(inputs):
+        outputs.append(do_trimgalore_salmon(inp, i, gtf_path))
+        for rep in inp.replicates:
+            os.remove(rep.r1.local_path)
+            if isinstance(rep, PairedEndReads):
+                os.remove(rep.r2.local_path)
+    return outputs
+
+
+def do_trimgalore_salmon(
+    input: TrimgaloreSalmonInput,
+    _tmp_index: int,
+    gtf_path: os.PathLike,
+) -> TrimgaloreSalmonOutput:
+    outputs = [do_trimgalore(input, i, x) for i, x in enumerate(input.replicates)]
+    trimmed_replicates = [x[1] for x in outputs]
+    trimgalore_reports = [y for x in outputs for y in x[0]]
+
+    gm = lgenome.GenomeManager(input.latch_genome.name)
 
     # lgenome
     # decoy = ref genome + transcript
     # genome + gtf = transcript
 
-    # (rohankan): Because Flyte is very stupid
-    custom_salmon_idx = None
+    custom_salmon_index = None
     custom_ref_genome = None
     custom_ref_trans = None
     custom_gtf = None
     for name, file in zip(input.custom_names, input.custom_files):
         if name == "index":
-            custom_salmon_idx = file
+            custom_salmon_index = file
         elif name == "trans":
             custom_ref_trans = file
         elif name == "genome":
@@ -487,9 +512,9 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
         elif name == "gtf":
             custom_gtf = file
 
-    if custom_salmon_idx is not None:
+    if custom_salmon_index is not None:
         # TODO: validate provided index...
-        run(["tar", "-xzvf", custom_salmon_idx.local_path])
+        run(["tar", "-xzvf", custom_salmon_index.local_path])
         if Path("salmon_index").is_dir() is False:
             raise MalformedSalmonIndex(
                 "The custom Salmon index provided must be a directory named 'salmon_index'"
@@ -539,12 +564,14 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
         #   2. First build a transcriptome from a genome + gtf, then 1.
         if custom_ref_trans is not None:
             gentrome = _build_gentrome(
-                custom_ref_genome.local_path, custom_ref_trans.local_path
+                custom_ref_genome.local_path,
+                custom_ref_trans.local_path,
             )
             local_index = _build_index(gentrome)
         elif custom_gtf is not None:
             local_ref_trans = _build_transcript(
-                custom_ref_genome.local_path, custom_gtf.local_path
+                custom_ref_genome.local_path,
+                custom_gtf.local_path,
             )
             gentrome = _build_gentrome(custom_ref_genome.local_path, local_ref_trans)
             local_index = _build_index(gentrome)
@@ -560,11 +587,14 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
                 "Both a custom reference genome + GTF file need to be provided."
             )
     else:
-        local_index = gm.download_salmon_index(show_progress=False)
+        if _tmp_index == 0:
+            local_index = gm.download_salmon_index(show_progress=False)
+        else:
+            local_index = Path("salmon_index")
 
     sf_files = []
 
-    merged = _merge_replicates([x for x in input.trimmed_replicates], input.sample_name)
+    merged = _merge_replicates(trimmed_replicates, input.sample_name)
     if len(merged) == 1:
         (r1,) = merged
         reads = ["-r", str(r1)]
@@ -609,12 +639,6 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
         )
     )
 
-    gtf_path = (
-        custom_gtf.local_path
-        if custom_gtf is not None
-        else gm.download_gtf(show_progress=False)
-    )
-
     try:
         subprocess.run(
             [
@@ -651,13 +675,36 @@ def selective_alignment_salmon(input: SalmonInput) -> SalmonOutput:
     #     _salmon_output_path(input, "full"),
     # )
 
-    return SalmonOutput(
+    return TrimgaloreSalmonOutput(
         passed_salmon=True,
         passed_tximport=True,
         sample_name=input.sample_name,
         sf_files=sf_files,
         auxiliary_directory=[auxiliary_directory],
+        trimmed_reads=trimmed_replicates,
+        trimgalore_reports=trimgalore_reports,
     )
+
+
+class InsufficientCustomGenomeResources(Exception):
+    pass
+
+
+class MalformedSalmonIndex(Exception):
+    pass
+
+
+class SalmonError(Exception):
+    pass
+
+
+# Each Salmon warning or error log starts with a timestamp surrounded in square
+# brackets ('\d{4}' represents the first part of the timestamp - the year)
+_SALMON_ALERT_PATTERN = re.compile(r"\[(warning|error)\] (.+?)(?:\[\d{4}|$)", re.DOTALL)
+
+
+def _salmon_output_path(inp: SalmonInput, suffix: str) -> str:
+    return f"{inp.base_remote_output_dir}{inp.run_name}/Quantification (salmon)/{inp.sample_name}/{suffix}"
 
 
 _COUNT_TABLE_GENE_ID_COLUMN = "gene_id"
@@ -666,7 +713,7 @@ _COUNT_TABLE_GENE_ID_COLUMN = "gene_id"
 @small_task
 def count_matrix_and_multiqc(
     run_name: str,
-    outputs: List[SalmonOutput],
+    outputs: List[TrimgaloreSalmonOutput],
     output_directory: Optional[LatchDir],
     latch_genome: LatchGenome,
     custom_gtf: Optional[LatchFile] = None,
@@ -772,11 +819,6 @@ def count_matrix_and_multiqc(
     return output_files
 
 
-class AlignmentTools(Enum):
-    star_salmon = "Traditional Alignment + Quantification"
-    salmon = "Selective Alignment + Quantification"
-
-
 @workflow
 def rnaseq(
     samples: List[Sample],
@@ -818,7 +860,7 @@ def rnaseq(
 
 
     __metadata__:
-        display_name: Bulk RNAseq
+        display_name: Bulk RNA-seq
         author:
             name: LatchBio
             email:
@@ -1012,7 +1054,24 @@ def rnaseq(
           __metadata__:
             display_name: Custom Output Location
     """
-    trimgalore_inputs = prepare_trimgalore_inputs(
+    # trimgalore_salmon_inputs = prepare_trimgalore_salmon_inputs(
+    #     samples=samples,
+    #     run_name=run_name,
+    #     clip_r1=None,
+    #     clip_r2=None,
+    #     three_prime_clip_r1=None,
+    #     three_prime_clip_r2=None,
+    #     custom_output_dir=custom_output_dir,
+    #     latch_genome=latch_genome,
+    #     bams=bams,
+    #     custom_gtf=custom_gtf,
+    #     custom_ref_genome=custom_ref_genome,
+    #     custom_ref_trans=custom_ref_trans,
+    #     custom_salmon_index=salmon_index,
+    #     save_indices=save_indices,
+    # )
+    outputs = trimgalore_salmon(
+        # inputs=trimgalore_salmon_inputs,
         samples=samples,
         run_name=run_name,
         clip_r1=None,
@@ -1020,23 +1079,18 @@ def rnaseq(
         three_prime_clip_r1=None,
         three_prime_clip_r2=None,
         custom_output_dir=custom_output_dir,
-    )
-    trimgalore_outputs = map_task(trimgalore)(input=trimgalore_inputs)
-    salmon_inputs = make_salmon_inputs(
-        outputs=trimgalore_outputs,
-        samples=samples,
-        run_name=run_name,
-        ref=latch_genome,
-        custom_ref_genome=custom_ref_genome,
+        latch_genome=latch_genome,
+        bams=bams,
         custom_gtf=custom_gtf,
+        custom_ref_genome=custom_ref_genome,
         custom_ref_trans=custom_ref_trans,
-        custom_salmon_idx=salmon_index,
-        custom_output_dir=custom_output_dir,
+        custom_salmon_index=salmon_index,
+        save_indices=save_indices,
     )
-    salmon_outputs = map_task(selective_alignment_salmon)(input=salmon_inputs)
+    clip_r1: Optional[int] = None
     return count_matrix_and_multiqc(
         run_name=run_name,
-        outputs=salmon_outputs,
+        outputs=outputs,
         output_directory=custom_output_dir,
         latch_genome=latch_genome,
         custom_gtf=custom_gtf,

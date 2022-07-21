@@ -42,6 +42,8 @@ RUN python3 -m pip install --upgrade lgenome
 RUN python3 -m pip install --upgrade lytekit
 COPY latch/ /root/latch
 RUN python3 -m pip install /root/latch
+COPY lytekit/ /root/lytekit
+RUN python3 -m pip install /root/lytekit
 COPY wf/ /root/wf
 ARG tag
 ENV FLYTE_INTERNAL_IMAGE $tag
