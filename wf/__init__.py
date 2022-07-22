@@ -233,7 +233,7 @@ class TrimgaloreSalmonOutput:
     sample_name: str
     sf_files: List[LatchFile]
     auxiliary_directory: List[LatchDir]
-    trimmed_reads: List[Replicate]
+    # trimmed_reads: List[Replicate]
     trimgalore_reports: List[LatchFile]
 
 
@@ -409,6 +409,10 @@ def do_trimgalore(
         r1, r2 = file_glob(f"{local_output}/*val*.fq*", reads_directory)
         trimmed_replicate = PairedEndReads(r1=r1, r2=r2)
 
+    os.remove(reads.r1.local_path)
+    if isinstance(reads, PairedEndReads):
+        os.remove(reads.r2.local_path)
+
     reports_directory = _output_path("Reports")
     reports = file_glob("*trimming_report.txt", reports_directory)
 
@@ -476,10 +480,10 @@ def trimgalore_salmon(
     outputs = []
     for i, inp in enumerate(inputs):
         outputs.append(do_trimgalore_salmon(inp, i, gtf_path))
-        for rep in inp.replicates:
-            os.remove(rep.r1.local_path)
-            if isinstance(rep, PairedEndReads):
-                os.remove(rep.r2.local_path)
+        # for rep in inp.replicates:
+        #     os.remove(rep.r1.local_path)
+        #     if isinstance(rep, PairedEndReads):
+        #         os.remove(rep.r2.local_path)
     return outputs
 
 
@@ -669,6 +673,11 @@ def do_trimgalore_salmon(
         _salmon_output_path(input, "Auxiliary Info"),
     )
 
+    for rep in trimmed_replicates:
+        os.remove(rep.r1.path)
+        if isinstance(rep, PairedEndReads):
+            os.remove(rep.r2.path)
+
     # In case users want access to all the output files
     # all_salmon_outputs_directory = LatchDir(
     #     "/root/salmon_quant",
@@ -681,7 +690,7 @@ def do_trimgalore_salmon(
         sample_name=input.sample_name,
         sf_files=sf_files,
         auxiliary_directory=[auxiliary_directory],
-        trimmed_reads=trimmed_replicates,
+        # trimmed_reads=trimmed_replicates,
         trimgalore_reports=trimgalore_reports,
     )
 
@@ -1087,7 +1096,6 @@ def rnaseq(
         custom_salmon_index=salmon_index,
         save_indices=save_indices,
     )
-    clip_r1: Optional[int] = None
     return count_matrix_and_multiqc(
         run_name=run_name,
         outputs=outputs,
